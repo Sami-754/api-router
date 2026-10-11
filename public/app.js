@@ -396,9 +396,13 @@ function requestTable(logs, emptyMsg) {
    ============================================================ */
 
 async function renderOverview() {
-  const [o, recent] = await Promise.all([
+  const [o, recent, providers, accounts, creds, mappings] = await Promise.all([
     Api.get("/api/overview"),
     Api.get("/api/requests?limit=120"),
+    Api.get("/api/providers"),
+    Api.get("/api/accounts"),
+    Api.get("/api/credentials"),
+    Api.get("/api/provider-resources"),
   ]);
   const buckets = new Array(24).fill(0);
   const errors = new Array(24).fill(0);
@@ -482,6 +486,38 @@ async function renderOverview() {
     })
     .join("");
 
+  const provRows = providers
+    .slice()
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((p) => {
+      const nAcct = accounts.filter((a) => a.providerId === p.id).length;
+      const nCred = creds.filter((c) => c.providerId === p.id).length;
+      const nModel = mappings.filter((m) => m.providerId === p.id).length;
+      return (
+        "<tr><td><a href=\"#/providers?id=" +
+        esc(p.id) +
+        '"><strong>' +
+        esc(p.id) +
+        "</strong></a><br>" +
+        '<span class="text-muted">' +
+        esc(p.displayName || "") +
+        "</span></td>" +
+        '<td class="cell-mono cell-muted">' +
+        esc(p.baseUrl || "—") +
+        "</td>" +
+        '<td class="cell-numeric">' +
+        nModel +
+        '</td><td class="cell-numeric">' +
+        nAcct +
+        '</td><td class="cell-numeric">' +
+        nCred +
+        "</td><td>" +
+        pill(p.enabled ? "enabled" : "disabled", p.enabled ? "ok" : "warn") +
+        "</td></tr>"
+      );
+    })
+    .join("");
+
   D.pc.innerHTML =
     '<div class="section"><h1>Overview</h1>' +
     '<p class="subtitle">Live state of the router.</p>' +
@@ -510,7 +546,14 @@ async function renderOverview() {
     "</div></div>" +
     '<div class="section"><h2 class="section-title">Recent requests</h2>' +
     requestTable(recent.slice(0, 12)) +
-    "</div>";
+    "</div>" +
+    '<div class="section"><h2 class="section-title">Providers</h2>' +
+    '<div class="table-container"><table class="table"><thead><tr>' +
+    "<th>Provider</th><th>Base URL</th><th>Models</th>" +
+    "<th>Accounts</th><th>Keys</th><th>State</th>" +
+    "</tr></thead><tbody>" +
+    provRows +
+    "</tbody></table></div></div>";
 }
 
 /* ---------- Playground ---------- */
@@ -923,6 +966,7 @@ async function renderResourcesByProvider(q) {
       const rows = ms
         .slice(0, 200)
         .map((m) => {
+          const pin = m.providerId + "::" + m.upstreamId;
           return (
             "<tr><td class=\"cell-mono\">" +
             esc(m.upstreamId) +
@@ -931,7 +975,11 @@ async function renderResourcesByProvider(q) {
             encodeURIComponent(m.resourceId) +
             '">' +
             esc(shortResource(m.resourceId)) +
-            "</a></td><td>" +
+            "</a></td>" +
+            '<td class="cell-mono cell-muted">' +
+            esc(pin) +
+            copyBtn(pin, "Copy") +
+            "</td><td>" +
             (m.enabled ? pill("enabled", "ok") : pill("disabled", "warn")) +
             "</td></tr>"
           );
@@ -948,7 +996,7 @@ async function renderResourcesByProvider(q) {
         badge(freeN + " free", "success") +
         "</div></div>" +
         '<div class="table-container"><table class="table"><thead><tr>' +
-        "<th>Provider model</th><th>Canonical</th><th>State</th>" +
+        "<th>Provider model</th><th>Canonical</th><th>Use as</th><th>State</th>" +
         "</tr></thead><tbody>" +
         rows +
         "</tbody></table></div>" +
@@ -1210,6 +1258,8 @@ async function renderResourceDetail(id, cap) {
         "</span> " +
         (isFreeId(m.upstreamId) ? pill("free", "ok") + " " : "") +
         (m.enabled ? pill("enabled", "ok") : pill("disabled", "warn")) +
+        " " +
+        copyBtn(m.providerId + "::" + m.upstreamId, "Copy pin") +
         '</h3><div class="row tight">' +
         '<button class="toggle-btn ' +
         (m.enabled ? "disable" : "enable") +

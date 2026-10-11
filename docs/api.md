@@ -38,6 +38,8 @@ Model forms:
 
 - `"nemotron-3-super-120b"` — auto-route the canonical model.
 - `"groq::nemotron-3-super-120b"` — pin to provider `groq`.
+- `"auto:free"` — virtual alias fanning out across every enabled free-tier
+  model (rebuilt from live mappings on each boot).
 - `"openrouter::nvidia/nemotron-3-super-120b"` — `::` separator keeps working
   when ids contain `/`.
 

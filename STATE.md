@@ -1,5 +1,25 @@
 # STATE.md
 
+## Overview providers + pin strings (2026-10-11)
+
+Overview gained a Providers table (base URL, display name, model/account/key
+counts, state — 6 batched fetches, all <15ms). Every model row now shows both
+forms: bare upstream name + copyable `provider::model` pin — in Resources By
+provider ("Use as" column) and on resource-detail mapping headers ("Copy
+pin"). No restart needed (static UI).
+
+## `auto:free` virtual model (2026-10-11)
+
+One name routes the whole free pool: `llm:model:auto:free` (parses with no
+provider pin) fans out across every enabled free-model mapping, so normal
+eligibility → policy → fallback applies. `refreshAutoFreeAlias()` in
+`free-models.ts` rebuilds it from live mappings at the end of every sync
+(skips the alias's own rows so it can't self-sustain; respects disabled
+mappings). Live: 152 alias mappings (unorouter 94, xkiro 27, openrouter 16,
+anyapi 11, nara 4) → 1795 executable routes. E2E: `model:"auto:free"` →
+200 attempt 1 via `anyapi/google/gemma-4-26b-a4b-it:free`, "router alive".
+Tests: alias fan-out/idempotency/disable + `auto:free` parse case — 79/79.
+
 ## Current status (2026-10-11 — admin token removed)
 
 Owner asked to drop the admin-token auth entirely. Gone from everywhere:

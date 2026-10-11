@@ -25,6 +25,13 @@ describe("model string parsing", () => {
     );
   });
 
+  it("parses the auto:free virtual alias (single colon, no pin)", () => {
+    const p = parseModelString("auto:free");
+    expect(p.providerPin).toBeNull();
+    expect(p.logicalModel).toBe("auto:free");
+    expect(p.canonicalResourceId).toBe("llm:model:auto:free");
+  });
+
   it("rejects invalid pins and empty models", () => {
     expect(() => parseModelString("")).toThrow();
     expect(() => parseModelString("bad pin::model")).toThrow();

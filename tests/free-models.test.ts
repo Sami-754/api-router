@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 import { openTestDb } from "./helpers.js";
 import { SqliteStore } from "../src/db/sqlite-store.js";
 import { encryptSecret } from "../src/shared/crypto.js";
-import { isFreeModel, syncProviderModels } from "../src/server/free-models.js";
+import {
+  AUTO_FREE_RESOURCE_ID,
+  isFreeModel,
+  refreshAutoFreeAlias,
+  syncProviderModels,
+} from "../src/server/free-models.js";
 
 process.env.MASTER_KEY ??= "test-master-key-0123456789abcdef0123456789";
 
@@ -87,9 +92,11 @@ describe("syncProviderModels", () => {
     });
     const ups = store
       .listProviderResources(undefined, "testprov")
+      .filter((m) => m.resourceId !== AUTO_FREE_RESOURCE_ID)
       .map((m) => m.upstreamId)
       .sort();
     // free + paid mapped, image endpoint skipped, churned model pruned
+    // (the auto:free alias row itself is excluded here, asserted below)
     expect(ups).toEqual(["paid-model", "shiny-new:free"]);
     expect(summary.mapped).toBe(2);
     expect(summary.pruned).toBe(1);
@@ -129,5 +136,42 @@ describe("syncProviderModels", () => {
         .map((m) => m.upstreamId)
         .sort(),
     ).toEqual(["gone-model", "paid-model"]);
+  });
+});
+
+describe("auto:free alias", () => {
+  it("fans out across every enabled free mapping (paid excluded)", async () => {
+    const store = seedStore();
+    await syncProviderModels({
+      store,
+      fetchImpl: modelsFetch as unknown as typeof fetch,
+    });
+    const n = refreshAutoFreeAlias(store);
+    expect(n).toBe(1);
+    expect(store.getResource(AUTO_FREE_RESOURCE_ID)).toBeDefined();
+    const alias = store.listProviderResources(AUTO_FREE_RESOURCE_ID);
+    expect(alias.map((m) => m.upstreamId)).toEqual(["shiny-new:free"]);
+    expect(alias[0].providerId).toBe("testprov");
+  });
+
+  it("is idempotent and respects disabled mappings", async () => {
+    const store = seedStore();
+    await syncProviderModels({
+      store,
+      fetchImpl: modelsFetch as unknown as typeof fetch,
+    });
+    expect(refreshAutoFreeAlias(store)).toBe(1);
+    expect(refreshAutoFreeAlias(store)).toBe(1);
+    expect(store.listProviderResources(AUTO_FREE_RESOURCE_ID)).toHaveLength(1);
+    const src = store
+      .listProviderResources(undefined, "testprov")
+      .find(
+        (m) =>
+          m.resourceId !== AUTO_FREE_RESOURCE_ID &&
+          m.upstreamId === "shiny-new:free",
+      )!;
+    store.setProviderResourceEnabled(src.id, false);
+    expect(refreshAutoFreeAlias(store)).toBe(0);
+    expect(store.listProviderResources(AUTO_FREE_RESOURCE_ID)).toHaveLength(0);
   });
 });

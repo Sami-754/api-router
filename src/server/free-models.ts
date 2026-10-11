@@ -46,6 +46,54 @@ export function isFreeModel(upstreamId: string): boolean {
   return FREE_MODEL_RE.test(upstreamId) && !SKIP_MODEL_RE.test(upstreamId);
 }
 
+/**
+ * Virtual alias model id. `auto:free` fans out across every enabled
+ * free-model mapping, so one model name routes through the whole free pool
+ * with the normal eligibility → policy → fallback pipeline.
+ */
+export const AUTO_FREE_RESOURCE_ID = "llm:model:auto:free";
+
+/**
+ * Rebuild the `auto:free` alias from current mappings. Derived state: wipe
+ * and recreate every run so churned models can't linger. Respects disabled
+ * mappings (a disabled free model is not aliased).
+ */
+export function refreshAutoFreeAlias(store: Store): number {
+  for (const m of store.listProviderResources(AUTO_FREE_RESOURCE_ID)) {
+    store.deleteProviderResource(m.id);
+  }
+  const free = store
+    .listProviderResources()
+    .filter(
+      (m) =>
+        m.enabled &&
+        m.resourceId !== AUTO_FREE_RESOURCE_ID &&
+        isFreeModel(m.upstreamId),
+    );
+  if (!free.length) return 0;
+  if (!store.getResource(AUTO_FREE_RESOURCE_ID)) {
+    store.upsertResource({
+      id: AUTO_FREE_RESOURCE_ID,
+      kind: "llm_model",
+      displayName: "Auto Free (all free models)",
+      capabilities: ["llm.chat", "llm.tools"],
+      metadata: { alias: true },
+    });
+  }
+  const now = new Date().toISOString();
+  for (const m of free) {
+    store.upsertProviderResource({
+      resourceId: AUTO_FREE_RESOURCE_ID,
+      providerId: m.providerId,
+      upstreamId: m.upstreamId,
+      capabilities: ["llm.chat", "llm.tools"],
+      enabled: true,
+      metadata: { free: true, aliasOf: m.id, syncedAt: now },
+    });
+  }
+  return free.length;
+}
+
 function extractIds(providerId: string, data: unknown): string[] {
   const list = (data as { data?: Array<{ id?: string }> }).data ?? [];
   let ids = list.map((m) => String(m.id ?? "")).filter(Boolean);
@@ -149,8 +197,10 @@ export async function syncProviderModels(opts: {
     }
   }
 
-  // Drop canonical LLM models left with no mappings (capability resources
+  // Rebuild the auto:free alias from the fresh mapping set, then drop
+  // canonical LLM models left with no mappings (capability resources
   // like web.search are never touched).
+  refreshAutoFreeAlias(store);
   for (const r of store.listResources()) {
     if (
       r.kind === "llm_model" &&
