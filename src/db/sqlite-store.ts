@@ -82,9 +82,9 @@ export class SqliteStore implements Store {
   }
 
   getProvider(id: string): Provider | undefined {
-    const r = this.db.prepare(`SELECT * FROM providers WHERE id = ?`).get(id.toLowerCase()) as
-      | Record<string, unknown>
-      | undefined;
+    const r = this.db
+      .prepare(`SELECT * FROM providers WHERE id = ?`)
+      .get(id.toLowerCase()) as Record<string, unknown> | undefined;
     if (!r) return undefined;
     return {
       id: String(r.id),
@@ -99,10 +99,9 @@ export class SqliteStore implements Store {
   }
 
   listProviders(): Provider[] {
-    const rows = this.db.prepare(`SELECT * FROM providers ORDER BY priority ASC, id ASC`).all() as Record<
-      string,
-      unknown
-    >[];
+    const rows = this.db
+      .prepare(`SELECT * FROM providers ORDER BY priority ASC, id ASC`)
+      .all() as Record<string, unknown>[];
     return rows.map((r) => ({
       id: String(r.id),
       displayName: String(r.display_name),
@@ -142,8 +141,7 @@ export class SqliteStore implements Store {
 
   getAccount(id: string): Account | undefined {
     const r = this.db.prepare(`SELECT * FROM accounts WHERE id = ?`).get(id) as
-      | Record<string, unknown>
-      | undefined;
+      Record<string, unknown> | undefined;
     if (!r) return undefined;
     return {
       id: String(r.id),
@@ -158,8 +156,13 @@ export class SqliteStore implements Store {
 
   listAccounts(providerId?: string): Account[] {
     const rows = providerId
-      ? (this.db.prepare(`SELECT * FROM accounts WHERE provider_id = ? ORDER BY id`).all(providerId.toLowerCase()) as Record<string, unknown>[])
-      : (this.db.prepare(`SELECT * FROM accounts ORDER BY id`).all() as Record<string, unknown>[]);
+      ? (this.db
+          .prepare(`SELECT * FROM accounts WHERE provider_id = ? ORDER BY id`)
+          .all(providerId.toLowerCase()) as Record<string, unknown>[])
+      : (this.db.prepare(`SELECT * FROM accounts ORDER BY id`).all() as Record<
+          string,
+          unknown
+        >[]);
     return rows.map((r) => ({
       id: String(r.id),
       providerId: String(r.provider_id),
@@ -200,9 +203,9 @@ export class SqliteStore implements Store {
   }
 
   getCredential(id: string): Credential | undefined {
-    const r = this.db.prepare(`SELECT * FROM credentials WHERE id = ?`).get(id) as
-      | Record<string, unknown>
-      | undefined;
+    const r = this.db
+      .prepare(`SELECT * FROM credentials WHERE id = ?`)
+      .get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
     return {
       id: String(r.id),
@@ -219,8 +222,12 @@ export class SqliteStore implements Store {
 
   listCredentials(accountId?: string): Credential[] {
     const rows = accountId
-      ? (this.db.prepare(`SELECT * FROM credentials WHERE account_id = ? ORDER BY id`).all(accountId) as Record<string, unknown>[])
-      : (this.db.prepare(`SELECT * FROM credentials ORDER BY id`).all() as Record<string, unknown>[]);
+      ? (this.db
+          .prepare(`SELECT * FROM credentials WHERE account_id = ? ORDER BY id`)
+          .all(accountId) as Record<string, unknown>[])
+      : (this.db
+          .prepare(`SELECT * FROM credentials ORDER BY id`)
+          .all() as Record<string, unknown>[]);
     return rows.map((r) => ({
       id: String(r.id),
       accountId: String(r.account_id),
@@ -235,13 +242,21 @@ export class SqliteStore implements Store {
   }
 
   updateCredentialStatus(id: string, status: Credential["status"]): void {
-    this.db.prepare(`UPDATE credentials SET status = ?, updated_at = ? WHERE id = ?`).run(status, nowIso(), id);
+    this.db
+      .prepare(`UPDATE credentials SET status = ?, updated_at = ? WHERE id = ?`)
+      .run(status, nowIso(), id);
   }
 
   markCredentialValidated(id: string, ok: boolean): void {
     this.db
-      .prepare(`UPDATE credentials SET status = ?, last_validated_at = ?, updated_at = ? WHERE id = ?`)
+      .prepare(
+        `UPDATE credentials SET status = ?, last_validated_at = ?, updated_at = ? WHERE id = ?`,
+      )
       .run(ok ? "active" : "invalid", nowIso(), nowIso(), id);
+  }
+
+  deleteCredential(id: string): void {
+    this.db.prepare(`DELETE FROM credentials WHERE id = ?`).run(id);
   }
 
   deleteResource(id: string): void {
@@ -271,9 +286,9 @@ export class SqliteStore implements Store {
   }
 
   getResource(id: string): Resource | undefined {
-    const r = this.db.prepare(`SELECT * FROM resources WHERE id = ?`).get(id) as
-      | Record<string, unknown>
-      | undefined;
+    const r = this.db
+      .prepare(`SELECT * FROM resources WHERE id = ?`)
+      .get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
     return {
       id: String(r.id),
@@ -288,7 +303,9 @@ export class SqliteStore implements Store {
   }
 
   listResources(): Resource[] {
-    const rows = this.db.prepare(`SELECT * FROM resources ORDER BY id`).all() as Record<string, unknown>[];
+    const rows = this.db
+      .prepare(`SELECT * FROM resources ORDER BY id`)
+      .all() as Record<string, unknown>[];
     return rows.map((r) => ({
       id: String(r.id),
       kind: r.kind as Resource["kind"],
@@ -303,10 +320,16 @@ export class SqliteStore implements Store {
 
   // ---------- provider resources ----------
   upsertProviderResource(
-    r: Omit<ProviderResource, "createdAt" | "updatedAt" | "id"> & { id?: string },
+    r: Omit<ProviderResource, "createdAt" | "updatedAt" | "id"> & {
+      id?: string;
+    },
   ): ProviderResource {
     const now = nowIso();
-    const id = r.id ?? `${r.resourceId}::${r.providerId}::${r.upstreamId}`.toLowerCase().replace(/[^a-z0-9:_\-./]+/g, "-");
+    const id =
+      r.id ??
+      `${r.resourceId}::${r.providerId}::${r.upstreamId}`
+        .toLowerCase()
+        .replace(/[^a-z0-9:_\-./]+/g, "-");
     const existing = this.getProviderResource(id);
     this.db
       .prepare(
@@ -330,9 +353,9 @@ export class SqliteStore implements Store {
   }
 
   getProviderResource(id: string): ProviderResource | undefined {
-    const r = this.db.prepare(`SELECT * FROM provider_resources WHERE id = ?`).get(id) as
-      | Record<string, unknown>
-      | undefined;
+    const r = this.db
+      .prepare(`SELECT * FROM provider_resources WHERE id = ?`)
+      .get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
     return {
       id: String(r.id),
@@ -348,8 +371,12 @@ export class SqliteStore implements Store {
     };
   }
 
-  listProviderResources(resourceId?: string, providerId?: string): ProviderResource[] {
-    let sql = `SELECT * FROM provider_resources`;    const args: string[] = [];
+  listProviderResources(
+    resourceId?: string,
+    providerId?: string,
+  ): ProviderResource[] {
+    let sql = `SELECT * FROM provider_resources`;
+    const args: string[] = [];
     const conds: string[] = [];
     if (resourceId) {
       conds.push(`resource_id = ?`);
@@ -377,11 +404,11 @@ export class SqliteStore implements Store {
   }
 
   setProviderResourceEnabled(id: string, enabled: boolean): void {
-    this.db.prepare(`UPDATE provider_resources SET enabled = ?, updated_at = ? WHERE id = ?`).run(
-      enabled ? 1 : 0,
-      nowIso(),
-      id,
-    );
+    this.db
+      .prepare(
+        `UPDATE provider_resources SET enabled = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(enabled ? 1 : 0, nowIso(), id);
   }
 
   deleteProviderResource(id: string): void {
@@ -406,7 +433,8 @@ export class SqliteStore implements Store {
     }
     const out: Route[] = [];
     for (const pr of prs) {
-      if (capability && !(pr.capabilities as string[]).includes(capability)) continue;
+      if (capability && !(pr.capabilities as string[]).includes(capability))
+        continue;
       const provider = providers.get(pr.providerId);
       if (!provider) continue;
       for (const account of accountsByProvider.get(pr.providerId) ?? []) {
@@ -441,9 +469,9 @@ export class SqliteStore implements Store {
   ): QuotaWindow {
     const now = nowIso();
     const id = q.id ?? newId("quota");
-    const existing = this.db.prepare(`SELECT created_at FROM quota_windows WHERE id = ?`).get(id) as
-      | { created_at: string }
-      | undefined;
+    const existing = this.db
+      .prepare(`SELECT created_at FROM quota_windows WHERE id = ?`)
+      .get(id) as { created_at: string } | undefined;
     this.db
       .prepare(
         `INSERT INTO quota_windows (id, credential_id, provider_resource_id, metric, limit_value, used_value, remaining_value, window_kind, window_seconds, window_started_at, reset_at, hard, source, confidence, observed_at, created_at, updated_at)
@@ -471,9 +499,16 @@ export class SqliteStore implements Store {
     return this.listQuotaWindows(q.credentialId).find((w) => w.id === id)!;
   }
 
-  listQuotaWindows(credentialId?: string): QuotaWindow[] {    const rows = credentialId
-      ? (this.db.prepare(`SELECT * FROM quota_windows WHERE credential_id = ? ORDER BY reset_at ASC`).all(credentialId) as Record<string, unknown>[])
-      : (this.db.prepare(`SELECT * FROM quota_windows ORDER BY reset_at ASC`).all() as Record<string, unknown>[]);
+  listQuotaWindows(credentialId?: string): QuotaWindow[] {
+    const rows = credentialId
+      ? (this.db
+          .prepare(
+            `SELECT * FROM quota_windows WHERE credential_id = ? ORDER BY reset_at ASC`,
+          )
+          .all(credentialId) as Record<string, unknown>[])
+      : (this.db
+          .prepare(`SELECT * FROM quota_windows ORDER BY reset_at ASC`)
+          .all() as Record<string, unknown>[]);
     return rows.map((r) => ({
       id: String(r.id),
       credentialId: String(r.credential_id),
@@ -481,7 +516,8 @@ export class SqliteStore implements Store {
       metric: r.metric as QuotaWindow["metric"],
       limitValue: Number(r.limit_value),
       usedValue: Number(r.used_value),
-      remainingValue: r.remaining_value == null ? null : Number(r.remaining_value),
+      remainingValue:
+        r.remaining_value == null ? null : Number(r.remaining_value),
       windowKind: r.window_kind as QuotaWindow["windowKind"],
       windowSeconds: (r.window_seconds as number | null) ?? null,
       windowStartedAt: (r.window_started_at as string | null) ?? null,
@@ -508,20 +544,43 @@ export class SqliteStore implements Store {
     return this.upsertQuotaWindow(q);
   }
 
-  incrementQuotaUsage(credentialId: string, metric: QuotaWindow["metric"], quantity: number): void {
+  incrementQuotaUsage(
+    credentialId: string,
+    metric: QuotaWindow["metric"],
+    quantity: number,
+    providerResourceId?: string,
+  ): void {
+    // Scoped updates touch global windows plus windows scoped to the
+    // given provider resource — never another resource's windows.
+    const scope = providerResourceId
+      ? " AND (provider_resource_id IS NULL OR provider_resource_id = ?)"
+      : "";
     this.db
       .prepare(
-        `UPDATE quota_windows SET used_value = used_value + ?, remaining_value = CASE WHEN remaining_value IS NULL THEN NULL ELSE MAX(0, remaining_value - ?) END, observed_at = ?, updated_at = ? WHERE credential_id = ? AND metric = ?`,
+        `UPDATE quota_windows SET used_value = used_value + ?, remaining_value = CASE WHEN remaining_value IS NULL THEN NULL ELSE MAX(0, remaining_value - ?) END, observed_at = ?, updated_at = ? WHERE credential_id = ? AND metric = ?${scope}`,
       )
-      .run(quantity, quantity, nowIso(), nowIso(), credentialId, metric);
+      .run(
+        quantity,
+        quantity,
+        nowIso(),
+        nowIso(),
+        credentialId,
+        metric,
+        ...(providerResourceId ? [providerResourceId] : []),
+      );
   }
 
   // ---------- health ----------
-  getHealth(credentialId: string, providerResourceId?: string | null): HealthSnapshot | undefined {
+  getHealth(
+    credentialId: string,
+    providerResourceId?: string | null,
+  ): HealthSnapshot | undefined {
     const key = providerResourceId ?? null;
     // Exact pair only. A miss must not inherit some other model's snapshot.
     const row = this.db
-      .prepare(`SELECT * FROM health_snapshots WHERE credential_id = ? AND provider_resource_id IS ?`)
+      .prepare(
+        `SELECT * FROM health_snapshots WHERE credential_id = ? AND provider_resource_id IS ?`,
+      )
       .get(credentialId, key) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return mapHealth(row);
@@ -537,22 +596,35 @@ export class SqliteStore implements Store {
          WHERE credential_id = ? AND cooldown_until IS NOT NULL
            AND last_error_class IN ('rate_limit', 'quota_exhausted', 'auth')`,
       )
-      .all(credentialId) as Array<{ cooldown_until: string; last_error_class: string }>;
+      .all(credentialId) as Array<{
+      cooldown_until: string;
+      last_error_class: string;
+    }>;
     let best: { until: string; errorClass: ProviderErrorClass } | undefined;
     for (const row of rows) {
       const untilMs = Date.parse(row.cooldown_until);
       if (!Number.isFinite(untilMs) || untilMs <= nowMs) continue;
       if (!best || row.cooldown_until > best.until) {
-        best = { until: row.cooldown_until, errorClass: row.last_error_class as ProviderErrorClass };
+        best = {
+          until: row.cooldown_until,
+          errorClass: row.last_error_class as ProviderErrorClass,
+        };
       }
     }
     return best;
   }
 
-  recordSuccess(credentialId: string, providerResourceId: string | null, latencyMs: number): void {
+  recordSuccess(
+    credentialId: string,
+    providerResourceId: string | null,
+    latencyMs: number,
+  ): void {
     const now = nowIso();
     const existing = this.getHealth(credentialId, providerResourceId);
-    const ema = existing?.latencyEmaMs == null ? latencyMs : existing.latencyEmaMs * 0.8 + latencyMs * 0.2;
+    const ema =
+      existing?.latencyEmaMs == null
+        ? latencyMs
+        : existing.latencyEmaMs * 0.8 + latencyMs * 0.2;
     this.db
       .prepare(
         `INSERT INTO health_snapshots (credential_id, provider_resource_id, success_count, failure_count, consecutive_failures, last_success_at, last_failure_at, last_error_class, cooldown_until, latency_ema_ms, updated_at)
@@ -592,15 +664,23 @@ export class SqliteStore implements Store {
           ? 5 * 60_000
           : errorClass === "auth"
             ? 10 * 60_000
-            : errorClass === "provider_unavailable" || errorClass === "timeout" || errorClass === "network"
+            : errorClass === "provider_unavailable" ||
+                errorClass === "timeout" ||
+                errorClass === "network"
               ? 30_000
               : 0;
     const requestedUntil = cooldownMs > 0 ? nowMs + cooldownMs : 0;
-    const existingUntil = existing?.cooldownUntil ? Date.parse(existing.cooldownUntil) : 0;
-    const activeExisting = Number.isFinite(existingUntil) && existingUntil > nowMs ? existingUntil : 0;
+    const existingUntil = existing?.cooldownUntil
+      ? Date.parse(existing.cooldownUntil)
+      : 0;
+    const activeExisting =
+      Number.isFinite(existingUntil) && existingUntil > nowMs
+        ? existingUntil
+        : 0;
     const freshUntil = defaultCooldown > 0 ? nowMs + defaultCooldown : 0;
     const untilMs = Math.max(requestedUntil, activeExisting, freshUntil);
-    const effectiveCooldown = untilMs > nowMs ? new Date(untilMs).toISOString() : null;
+    const effectiveCooldown =
+      untilMs > nowMs ? new Date(untilMs).toISOString() : null;
     this.db
       .prepare(
         `INSERT INTO health_snapshots (credential_id, provider_resource_id, success_count, failure_count, consecutive_failures, last_success_at, last_failure_at, last_error_class, cooldown_until, latency_ema_ms, updated_at)
@@ -622,27 +702,50 @@ export class SqliteStore implements Store {
       );
   }
 
-  clearCooldown(credentialId: string, providerResourceId?: string | null): void {    if (providerResourceId) {
+  clearCooldown(
+    credentialId: string,
+    providerResourceId?: string | null,
+  ): void {
+    if (providerResourceId) {
       this.db
-        .prepare(`UPDATE health_snapshots SET cooldown_until = NULL, consecutive_failures = 0, updated_at = ? WHERE credential_id = ? AND provider_resource_id = ?`)
+        .prepare(
+          `UPDATE health_snapshots SET cooldown_until = NULL, consecutive_failures = 0, updated_at = ? WHERE credential_id = ? AND provider_resource_id = ?`,
+        )
         .run(nowIso(), credentialId, providerResourceId);
     } else {
       this.db
-        .prepare(`UPDATE health_snapshots SET cooldown_until = NULL, consecutive_failures = 0, updated_at = ? WHERE credential_id = ?`)
+        .prepare(
+          `UPDATE health_snapshots SET cooldown_until = NULL, consecutive_failures = 0, updated_at = ? WHERE credential_id = ?`,
+        )
         .run(nowIso(), credentialId);
     }
   }
 
   // ---------- usage + logs ----------
-  sumUsage(credentialId: string, metric: UsageEvent["metric"], sinceIso: string): number {
+  sumUsage(
+    credentialId: string,
+    metric: UsageEvent["metric"],
+    sinceIso: string,
+    providerResourceId?: string,
+  ): number {
+    const scope = providerResourceId
+      ? " AND (provider_resource_id IS NULL OR provider_resource_id = ?)"
+      : "";
     const r = this.db
       .prepare(
-        `SELECT COALESCE(SUM(quantity), 0) AS total FROM usage_events WHERE credential_id = ? AND metric = ? AND observed_at >= ?`,
+        `SELECT COALESCE(SUM(quantity), 0) AS total FROM usage_events WHERE credential_id = ? AND metric = ? AND observed_at >= ?${scope}`,
       )
-      .get(credentialId, metric, sinceIso) as { total: number };
+      .get(
+        credentialId,
+        metric,
+        sinceIso,
+        ...(providerResourceId ? [providerResourceId] : []),
+      ) as { total: number };
     return Number(r.total);
   }
-  recordUsage(e: Omit<UsageEvent, "id" | "observedAt"> & { observedAt?: string }): UsageEvent {
+  recordUsage(
+    e: Omit<UsageEvent, "id" | "observedAt"> & { observedAt?: string },
+  ): UsageEvent {
     const row: UsageEvent = {
       id: newId("use"),
       requestId: e.requestId,
@@ -656,7 +759,15 @@ export class SqliteStore implements Store {
       .prepare(
         `INSERT INTO usage_events (id, request_id, credential_id, provider_resource_id, metric, quantity, observed_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(row.id, row.requestId, row.credentialId, row.providerResourceId, row.metric, row.quantity, row.observedAt);
+      .run(
+        row.id,
+        row.requestId,
+        row.credentialId,
+        row.providerResourceId,
+        row.metric,
+        row.quantity,
+        row.observedAt,
+      );
     return row;
   }
 
@@ -694,14 +805,14 @@ export class SqliteStore implements Store {
   }
 
   listRequestLogs(limit = 100): RequestLog[] {
-    const rows = this.db.prepare(`SELECT * FROM request_logs ORDER BY created_at DESC LIMIT ?`).all(limit) as Record<
-      string,
-      unknown
-    >[];
+    const rows = this.db
+      .prepare(`SELECT * FROM request_logs ORDER BY created_at DESC LIMIT ?`)
+      .all(limit) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: String(r.id),
       requestedResourceId: String(r.requested_resource_id),
-      requestedCapability: (r.requested_capability as RequestLog["requestedCapability"]) ?? null,
+      requestedCapability:
+        (r.requested_capability as RequestLog["requestedCapability"]) ?? null,
       providerPin: (r.provider_pin as string | null) ?? null,
       accountPin: (r.account_pin as string | null) ?? null,
       credentialPin: (r.credential_pin as string | null) ?? null,
@@ -724,14 +835,15 @@ export class SqliteStore implements Store {
   }
 
   getRequestLog(id: string): RequestLog | undefined {
-    const r = this.db.prepare(`SELECT * FROM request_logs WHERE id = ?`).get(id) as
-      | Record<string, unknown>
-      | undefined;
+    const r = this.db
+      .prepare(`SELECT * FROM request_logs WHERE id = ?`)
+      .get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
     return {
       id: String(r.id),
       requestedResourceId: String(r.requested_resource_id),
-      requestedCapability: (r.requested_capability as RequestLog["requestedCapability"]) ?? null,
+      requestedCapability:
+        (r.requested_capability as RequestLog["requestedCapability"]) ?? null,
       providerPin: (r.provider_pin as string | null) ?? null,
       accountPin: (r.account_pin as string | null) ?? null,
       credentialPin: (r.credential_pin as string | null) ?? null,

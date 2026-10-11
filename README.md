@@ -71,7 +71,7 @@ batch key validation, plug-and-play tools (`/v1/tools/{search,scrape,extract,cra
 across Exa/Tavily/Firecrawl) + MCP server (`pnpm mcp`: `web_search/scrape/extract/crawl/map`, `chat`).
 70 tests green (`pnpm test`).
 
-Dashboard: `GET /dashboard` (admin token from `.env`).
+Dashboard: `GET /dashboard` (no auth — local-first; bind to loopback).
 
 ## Quickstart (pnpm)
 

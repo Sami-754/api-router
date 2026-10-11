@@ -11,10 +11,28 @@ import { encryptSecret } from "../src/shared/crypto.js";
 process.env.MASTER_KEY ??= "test-master-key-0123456789abcdef0123456789";
 
 function exaJson() {
-  return { results: [{ title: "Exa hit", url: "https://exa.example/a", text: "exa snippet", score: 0.9 }] };
+  return {
+    results: [
+      {
+        title: "Exa hit",
+        url: "https://exa.example/a",
+        text: "exa snippet",
+        score: 0.9,
+      },
+    ],
+  };
 }
 function tavilyJson() {
-  return { results: [{ title: "Tavily hit", url: "https://tavily.example/b", content: "tavily snippet", score: 0.8 }] };
+  return {
+    results: [
+      {
+        title: "Tavily hit",
+        url: "https://tavily.example/b",
+        content: "tavily snippet",
+        score: 0.8,
+      },
+    ],
+  };
 }
 
 async function setupSearch(fetchImpl?: typeof fetch) {
@@ -24,24 +42,82 @@ async function setupSearch(fetchImpl?: typeof fetch) {
   registry.register(new ExaAdapter());
   registry.register(new TavilyAdapter());
   const router = new Router({
-    store, registry, defaultPolicy: "auto", maxAttempts: 4, timeoutMs: 5000,
-    fetchImpl: fetchImpl ?? (async (url) => {
-      const u = String(url);
-      const body = u.includes("exa") ? exaJson() : tavilyJson();
-      return new Response(JSON.stringify(body), { status: 200 });
-    }),
-    defaultBaseUrls: { exa: "https://api.exa.ai", tavily: "https://api.tavily.com" },
+    store,
+    registry,
+    defaultPolicy: "auto",
+    maxAttempts: 4,
+    timeoutMs: 5000,
+    fetchImpl:
+      fetchImpl ??
+      (async (url) => {
+        const u = String(url);
+        const body = u.includes("exa") ? exaJson() : tavilyJson();
+        return new Response(JSON.stringify(body), { status: 200 });
+      }),
+    defaultBaseUrls: {
+      exa: "https://api.exa.ai",
+      tavily: "https://api.tavily.com",
+    },
   });
-  store.upsertProvider({ id: "exa", displayName: "Exa", baseUrl: "https://api.exa.ai", enabled: true, priority: 10 });
-  store.upsertProvider({ id: "tavily", displayName: "Tavily", baseUrl: "https://api.tavily.com", enabled: true, priority: 20 });
-  store.upsertResource({ id: "web.search", kind: "capability", displayName: "Web search", capabilities: ["web.search"] });
-  store.upsertProviderResource({ resourceId: "web.search", providerId: "exa", upstreamId: "search", capabilities: ["web.search"], enabled: true });
-  store.upsertProviderResource({ resourceId: "web.search", providerId: "tavily", upstreamId: "search", capabilities: ["web.search"], enabled: true });
+  store.upsertProvider({
+    id: "exa",
+    displayName: "Exa",
+    baseUrl: "https://api.exa.ai",
+    enabled: true,
+    priority: 10,
+  });
+  store.upsertProvider({
+    id: "tavily",
+    displayName: "Tavily",
+    baseUrl: "https://api.tavily.com",
+    enabled: true,
+    priority: 20,
+  });
+  store.upsertResource({
+    id: "web.search",
+    kind: "capability",
+    displayName: "Web search",
+    capabilities: ["web.search"],
+  });
+  store.upsertProviderResource({
+    resourceId: "web.search",
+    providerId: "exa",
+    upstreamId: "search",
+    capabilities: ["web.search"],
+    enabled: true,
+  });
+  store.upsertProviderResource({
+    resourceId: "web.search",
+    providerId: "tavily",
+    upstreamId: "search",
+    capabilities: ["web.search"],
+    enabled: true,
+  });
   store.upsertAccount({ id: "exa-main", providerId: "exa", enabled: true });
-  store.upsertAccount({ id: "tavily-main", providerId: "tavily", enabled: true });
-  store.createCredential({ id: "cred-exa-1", accountId: "exa-main", secretEncrypted: encryptSecret("exa-k"), status: "active" });
-  store.createCredential({ id: "cred-tavily-1", accountId: "tavily-main", secretEncrypted: encryptSecret("tavily-k"), status: "active" });
-  const app = await buildApp({ store, registry, router, adminToken: "", settings: { defaultPolicy: "auto" }, fetchImpl: undefined });
+  store.upsertAccount({
+    id: "tavily-main",
+    providerId: "tavily",
+    enabled: true,
+  });
+  store.createCredential({
+    id: "cred-exa-1",
+    accountId: "exa-main",
+    secretEncrypted: encryptSecret("exa-k"),
+    status: "active",
+  });
+  store.createCredential({
+    id: "cred-tavily-1",
+    accountId: "tavily-main",
+    secretEncrypted: encryptSecret("tavily-k"),
+    status: "active",
+  });
+  const app = await buildApp({
+    store,
+    registry,
+    router,
+    settings: { defaultPolicy: "auto" },
+    fetchImpl: undefined,
+  });
   return { app, store };
 }
 
@@ -49,7 +125,9 @@ describe("web.search slice (P2)", () => {
   it("auto-routes a search across exa and tavily", async () => {
     const { app } = await setupSearch();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/search", payload: { query: "router test" },
+      method: "POST",
+      url: "/v1/tools/search",
+      payload: { query: "router test" },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().results.length).toBe(1);
@@ -59,7 +137,8 @@ describe("web.search slice (P2)", () => {
   it("pins a search provider via routing.provider", async () => {
     const { app } = await setupSearch();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/search",
+      method: "POST",
+      url: "/v1/tools/search",
       payload: { query: "x", routing: { provider: "tavily" } },
     });
     expect(res.statusCode).toBe(200);
@@ -76,7 +155,8 @@ describe("web.search slice (P2)", () => {
     };
     const { app } = await setupSearch(flaky);
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/search",
+      method: "POST",
+      url: "/v1/tools/search",
       payload: { query: "x", routing: { policy: "priority" } },
     });
     expect(res.statusCode).toBe(200);
@@ -85,10 +165,13 @@ describe("web.search slice (P2)", () => {
   });
 
   it("pinned search never crosses providers", async () => {
-    const dead: typeof fetch = async () => new Response("down", { status: 500 });
+    const dead: typeof fetch = async () =>
+      new Response("down", { status: 500 });
     const { app } = await setupSearch(dead);
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/search", payload: { query: "x", routing: { provider: "exa" } },
+      method: "POST",
+      url: "/v1/tools/search",
+      payload: { query: "x", routing: { provider: "exa" } },
     });
     expect(res.statusCode).toBe(502);
   });
@@ -97,7 +180,12 @@ describe("web.search slice (P2)", () => {
     const { store } = await setupSearch();
     // Same canonical capability, second exa account/cred → new executable route.
     store.upsertAccount({ id: "exa-second", providerId: "exa", enabled: true });
-    store.createCredential({ id: "cred-exa-2", accountId: "exa-second", secretEncrypted: encryptSecret("k2"), status: "active" });
+    store.createCredential({
+      id: "cred-exa-2",
+      accountId: "exa-second",
+      secretEncrypted: encryptSecret("k2"),
+      status: "active",
+    });
     expect(store.expandRoutes("web.search", "web.search").length).toBe(3);
   });
 });

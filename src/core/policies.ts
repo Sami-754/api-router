@@ -1,4 +1,9 @@
-import type { HealthSnapshot, QuotaWindow, Route, RoutingPolicyName } from "../shared/types.js";
+import type {
+  HealthSnapshot,
+  QuotaWindow,
+  Route,
+  RoutingPolicyName,
+} from "../shared/types.js";
 import { msUntilReset, remainingFractionOf } from "./quota.js";
 
 // Pluggable routing policies. Each scorer returns a higher-is-better score plus
@@ -66,7 +71,11 @@ function reliabilityScore(health?: HealthSnapshot): number {
 export function scoreRoute(
   policy: RoutingPolicyName,
   input: ScoringInput,
-): { score: number; reason: string; details: Record<string, number | string | null> } {
+): {
+  score: number;
+  reason: string;
+  details: Record<string, number | string | null>;
+} {
   const { route, quotas, health, nowMs } = input;
   const remaining = minRemainingFraction(quotas);
   const resetMs = soonestResetMs(quotas, nowMs);
@@ -92,9 +101,17 @@ export function scoreRoute(
       // usable but loses to known-expiring quota.
       const r = remaining ?? 0.5;
       const score = 0.15 + 0.85 * r * (0.25 + 0.75 * urgency);
-      const pct = remaining == null ? "unknown quota" : `${Math.round(remaining * 100)}% remaining`;
-      const reset = resetDays == null ? "unknown reset" : `resets in ${resetDays}d`;
-      return { score, reason: `burn: ${pct}, ${reset} (urgency ${urgency.toFixed(2)})`, details };
+      const pct =
+        remaining == null
+          ? "unknown quota"
+          : `${Math.round(remaining * 100)}% remaining`;
+      const reset =
+        resetDays == null ? "unknown reset" : `resets in ${resetDays}d`;
+      return {
+        score,
+        reason: `burn: ${pct}, ${reset} (urgency ${urgency.toFixed(2)})`,
+        details,
+      };
     }
     case "preserve": {
       const r = remaining ?? 0.5;
@@ -106,18 +123,39 @@ export function scoreRoute(
       };
     }
     case "fast":
-      return { score: 0.1 + 0.9 * latency, reason: `fast: latency EMA ${health?.latencyEmaMs ?? "unknown"}ms`, details };
+      return {
+        score: 0.1 + 0.9 * latency,
+        reason: `fast: latency EMA ${health?.latencyEmaMs ?? "unknown"}ms`,
+        details,
+      };
     case "reliable":
-      return { score: 0.1 + 0.9 * reliability, reason: `reliable: success score ${reliability.toFixed(2)}`, details };
+      return {
+        score: 0.1 + 0.9 * reliability,
+        reason: `reliable: success score ${reliability.toFixed(2)}`,
+        details,
+      };
     case "cheap":
       // No cost model yet: fall back to priority order, documented as such.
-      return { score: priorityTerm, reason: `cheap: no cost model yet, using provider priority ${route.providerPriority}`, details };
+      return {
+        score: priorityTerm,
+        reason: `cheap: no cost model yet, using provider priority ${route.providerPriority}`,
+        details,
+      };
     case "priority":
-      return { score: priorityTerm, reason: `priority: provider order ${route.providerPriority}`, details };
+      return {
+        score: priorityTerm,
+        reason: `priority: provider order ${route.providerPriority}`,
+        details,
+      };
     case "auto":
     default: {
       const r = remaining ?? 0.5;
-      const score = 0.35 * r + 0.25 * urgency * r + 0.2 * reliability + 0.15 * latency + 0.05 * priorityTerm;
+      const score =
+        0.35 * r +
+        0.25 * urgency * r +
+        0.2 * reliability +
+        0.15 * latency +
+        0.05 * priorityTerm;
       return {
         score,
         reason: `auto: ${remaining == null ? "unknown quota" : `${Math.round(r * 100)}% remaining`}${resetDays == null ? "" : `, resets in ${resetDays}d`}, reliability ${reliability.toFixed(2)}`,

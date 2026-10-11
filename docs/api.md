@@ -3,9 +3,9 @@
 Base URL: `http://127.0.0.1:4500` by default (see `PORT`/`HOST` in `.env`;
 `.env.example` ships `PORT=3000` — the examples below use your configured port).
 
-Auth: if `ADMIN_TOKEN` is set, all `/api/*` endpoints require
-`Authorization: Bearer <token>`. `/v1/*` and `/healthz` are public by design
-(point your OpenAI client at the router).
+No auth: `/api/*`, `/v1/*` and `/healthz` are all public by design.
+This is a local-first single-user service — bind to loopback (`HOST=127.0.0.1`)
+or trust the local network instead of adding tokens.
 
 ## LLM compatibility
 
@@ -97,6 +97,7 @@ live rate windows like LLM tokens.
 | GET | `/api/credentials` | list (redacted, optional `?account=`); secrets never returned |
 | POST | `/api/credentials` | store a secret (`{accountId, secret, label?}`); encrypted at rest |
 | PATCH | `/api/credentials/:id` | change `status` (`active`/`disabled`/`invalid`) |
+| DELETE | `/api/credentials/:id` | delete a key (quotas, health, usage cascade) |
 | GET/POST | `/api/resources` | canonical resources |
 | GET/POST | `/api/provider-resources` | canonical ↔ upstream mappings |
 | GET | `/api/routes?resource=&capability=` | expanded executable routes + quotas + health |

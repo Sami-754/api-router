@@ -20,7 +20,9 @@ describe("model string parsing", () => {
     const p = parseModelString("openrouter::nvidia/nemotron-3-super-120b");
     expect(p.providerPin).toBe("openrouter");
     expect(p.logicalModel).toBe("nvidia/nemotron-3-super-120b");
-    expect(p.canonicalResourceId).toBe("llm:model:nvidia/nemotron-3-super-120b");
+    expect(p.canonicalResourceId).toBe(
+      "llm:model:nvidia/nemotron-3-super-120b",
+    );
   });
 
   it("rejects invalid pins and empty models", () => {
@@ -30,6 +32,8 @@ describe("model string parsing", () => {
   });
 
   it("canonicalizes case", () => {
-    expect(toCanonicalId("Nemotron-3-Super-120B")).toBe("llm:model:nemotron-3-super-120b");
+    expect(toCanonicalId("Nemotron-3-Super-120B")).toBe(
+      "llm:model:nemotron-3-super-120b",
+    );
   });
 });

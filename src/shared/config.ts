@@ -3,7 +3,6 @@ export interface AppConfig {
   host: string;
   databasePath: string;
   masterKey: string;
-  adminToken: string;
   defaultPolicy: string;
   logLevel: string;
 }
@@ -14,7 +13,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     host: env.HOST ?? "127.0.0.1",
     databasePath: env.DATABASE_PATH ?? "./data/router.db",
     masterKey: env.MASTER_KEY ?? "",
-    adminToken: env.ADMIN_TOKEN ?? "",
     defaultPolicy: env.DEFAULT_POLICY ?? "auto",
     logLevel: env.LOG_LEVEL ?? "info",
   };
@@ -42,6 +40,7 @@ export function validateBaseUrl(raw: string): URL {
   if (host.startsWith("127.") || host === "::1" || host === "[::1]") {
     throw new Error("base URL host is not allowed");
   }
-  if (u.username || u.password) throw new Error("base URL must not contain credentials");
+  if (u.username || u.password)
+    throw new Error("base URL must not contain credentials");
   return u;
 }

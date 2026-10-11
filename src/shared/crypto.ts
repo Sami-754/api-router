@@ -1,4 +1,9 @@
-import { createCipheriv, createDecipheriv, randomBytes, timingSafeEqual } from "node:crypto";
+import {
+  createCipheriv,
+  createDecipheriv,
+  randomBytes,
+  timingSafeEqual,
+} from "node:crypto";
 
 // AES-256-GCM credential encryption. MASTER_KEY must be 32+ chars; we derive
 // a 32-byte key via SHA-256 so any long secret works, while still requiring length.
@@ -30,9 +35,14 @@ export function encryptSecret(plaintext: string, masterKey?: string): string {
 export function decryptSecret(payload: string, masterKey?: string): string {
   const key = deriveKey(masterKey ?? requireMasterKey());
   const parts = payload.split(".");
-  if (parts.length !== 4 || parts[0] !== "gcm1") throw new Error("invalid encrypted payload");
+  if (parts.length !== 4 || parts[0] !== "gcm1")
+    throw new Error("invalid encrypted payload");
   const [, ivB64, tagB64, ctB64] = parts;
-  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(ivB64, "base64"));
+  const decipher = createDecipheriv(
+    "aes-256-gcm",
+    key,
+    Buffer.from(ivB64, "base64"),
+  );
   decipher.setAuthTag(Buffer.from(tagB64, "base64"));
   return Buffer.concat([
     decipher.update(Buffer.from(ctB64, "base64")),
@@ -44,12 +54,6 @@ export function decryptSecret(payload: string, masterKey?: string): string {
 export function redactCredentialId(id: string): string {
   if (id.length <= 6) return "***";
   return `${id.slice(0, 3)}…${id.slice(-3)}`;
-}
-
-export function redactSecret(secret: string): string {
-  if (!secret) return "***";
-  const tail = secret.slice(-4);
-  return `***${tail}`;
 }
 
 export function timingSafeCompare(a: string, b: string): boolean {

@@ -2,11 +2,11 @@ import { decryptSecret, newId } from "../shared/crypto.js";
 import type {
   Capability,
   ProviderErrorClass,
+  QuotaWindow,
   Route,
   RoutingHint,
   RoutingPolicyName,
 } from "../shared/types.js";
-import type { ProviderRegistry } from "../provider-sdk/registry.js";
 import type {
   AdapterContext,
   NormalizedRequest,
@@ -15,8 +15,10 @@ import type {
   ResolvedRoute,
   StreamChunk,
 } from "../provider-sdk/types.js";
+import type { ProviderRegistry } from "../provider-sdk/registry.js";
 import { POLICIES, scoreRoute } from "./policies.js";
 import { quotaViewForRoute, rateChecksFor } from "./quota.js";
+import { estimateTokensFromChars } from "../shared/tokens.js";
 import type { Store } from "./store.js";
 
 export interface RouterOptions {
@@ -70,7 +72,12 @@ export interface StreamOutcome {
   policy: RoutingPolicyName;
   selectionReason: string;
   /** Called by the server when the stream finishes or aborts (accounting). */
-  finish: (info: { fullText: string; usage: StreamChunk["usage"]; aborted: boolean; error?: string }) => void;
+  finish: (info: {
+    fullText: string;
+    usage: StreamChunk["usage"];
+    aborted: boolean;
+    error?: string;
+  }) => void;
 }
 
 export class RouterError extends Error {
@@ -81,7 +88,12 @@ export class RouterError extends Error {
   attempts: number;
   constructor(
     message: string,
-    opts: { statusCode?: number; code?: string; errorClass?: ProviderErrorClass; attempts?: number } = {},
+    opts: {
+      statusCode?: number;
+      code?: string;
+      errorClass?: ProviderErrorClass;
+      attempts?: number;
+    } = {},
   ) {
     super(message);
     this.statusCode = opts.statusCode ?? 500;
@@ -121,7 +133,9 @@ export class Router {
   }
 
   resolvePolicy(hint?: RoutingHint): RoutingPolicyName {
-    const p = (hint?.policy ?? this.defaultPolicy).toLowerCase() as RoutingPolicyName;
+    const p = (
+      hint?.policy ?? this.defaultPolicy
+    ).toLowerCase() as RoutingPolicyName;
     return (POLICIES as string[]).includes(p) ? p : "auto";
   }
 
@@ -177,7 +191,10 @@ export class Router {
         continue;
       }
       if (route.credentialStatus !== "active") {
-        filtered.push({ route, reason: `credential ${route.credentialStatus}` });
+        filtered.push({
+          route,
+          reason: `credential ${route.credentialStatus}`,
+        });
         continue;
       }
       if (!route.providerResourceEnabled) {
@@ -185,45 +202,75 @@ export class Router {
         continue;
       }
       if (!route.capabilities.includes(capability)) {
-        filtered.push({ route, reason: `capability ${capability} unsupported` });
+        filtered.push({
+          route,
+          reason: `capability ${capability} unsupported`,
+        });
         continue;
       }
       if (!this.registry.get(route.providerId)) {
-        filtered.push({ route, reason: `no adapter for provider ${route.providerId}` });
+        filtered.push({
+          route,
+          reason: `no adapter for provider ${route.providerId}`,
+        });
         continue;
       }
       // Context / capability constraints.
       if (requestedTokens != null) {
         const pr = this.store.getProviderResource(route.providerResourceId);
-        const ctx = pr?.contextTokens ?? this.store.getResource(resourceId)?.contextTokens;
+        const ctx =
+          pr?.contextTokens ??
+          this.store.getResource(resourceId)?.contextTokens;
         if (ctx != null && requestedTokens > ctx) {
-          filtered.push({ route, reason: `request needs ~${requestedTokens} tokens, route allows ${ctx}` });
+          filtered.push({
+            route,
+            reason: `request needs ~${requestedTokens} tokens, route allows ${ctx}`,
+          });
           continue;
         }
       }
       // A rate limit, quota hit, or auth failure cools the whole API key down,
       // so the next request skips it for every model on that provider.
-      const keyCooldown = this.store.keyCooldownUntil(route.credentialId, nowMs);
+      const keyCooldown = this.store.keyCooldownUntil(
+        route.credentialId,
+        nowMs,
+      );
       if (keyCooldown) {
-        filtered.push({ route, reason: `key cooldown until ${keyCooldown.until} (${keyCooldown.errorClass})` });
+        filtered.push({
+          route,
+          reason: `key cooldown until ${keyCooldown.until} (${keyCooldown.errorClass})`,
+        });
         continue;
       }
       // Per-model cooldown (upstream 5xx, timeout, network).
-      const health = this.store.getHealth(route.credentialId, route.providerResourceId);
+      const health = this.store.getHealth(
+        route.credentialId,
+        route.providerResourceId,
+      );
       if (health?.cooldownUntil && Date.parse(health.cooldownUntil) > nowMs) {
-        filtered.push({ route, reason: `cooldown until ${health.cooldownUntil} (${health.lastErrorClass ?? "error"})` });
+        filtered.push({
+          route,
+          reason: `cooldown until ${health.cooldownUntil} (${health.lastErrorClass ?? "error"})`,
+        });
         continue;
       }
       // Hard quota exhaustion (static windows).
       const qv = quotaViewForRoute(this.store, route, nowMs);
       if (qv.exhausted) {
-        filtered.push({ route, reason: `quota exhausted: ${qv.exhaustedReasons.join("; ")}` });
+        filtered.push({
+          route,
+          reason: `quota exhausted: ${qv.exhaustedReasons.join("; ")}`,
+        });
         continue;
       }
       // Live rate windows (per minute/hour/day): enforced from usage_events
       // so they reset automatically when the window rolls.
-      const blown = rateChecksFor(this.store, route.credentialId, route.providerResourceId, nowMs)
-        .filter((c) => c.remaining <= 0);
+      const blown = rateChecksFor(
+        this.store,
+        route.credentialId,
+        route.providerResourceId,
+        nowMs,
+      ).filter((c) => c.remaining <= 0);
       if (blown.length > 0) {
         filtered.push({
           route,
@@ -232,9 +279,13 @@ export class Router {
         continue;
       }
       // Phase 3: policy scoring.
-      const quotas = this.store.listQuotaWindows(route.credentialId).filter(
-        (w) => !w.providerResourceId || w.providerResourceId === route.providerResourceId,
-      );
+      const quotas = this.store
+        .listQuotaWindows(route.credentialId)
+        .filter(
+          (w) =>
+            !w.providerResourceId ||
+            w.providerResourceId === route.providerResourceId,
+        );
       const { score, reason, details } = scoreRoute(policy, {
         route,
         quotas,
@@ -271,9 +322,22 @@ export class Router {
         : `unknown resource or no routes configured for ${opts.resourceId}`;
       // Rate/quota/cooldown pressure is a 429 even for pinned requests;
       // only genuinely-missing routes are 404.
-      const pressured = filtered.some((f) => /quota|rate limit|exhausted|cooldown/i.test(f.reason));
-      const statusCode = pressured ? 429 : providerPin && filtered.length ? 404 : filtered.length ? 503 : 404;
-      const code = statusCode === 404 ? "route_not_found" : statusCode === 429 ? "rate_limited" : "no_eligible_routes";
+      const pressured = filtered.some((f) =>
+        /quota|rate limit|exhausted|cooldown/i.test(f.reason),
+      );
+      const statusCode = pressured
+        ? 429
+        : providerPin && filtered.length
+          ? 404
+          : filtered.length
+            ? 503
+            : 404;
+      const code =
+        statusCode === 404
+          ? "route_not_found"
+          : statusCode === 429
+            ? "rate_limited"
+            : "no_eligible_routes";
       this.store.appendRequestLog({
         id: requestId,
         requestedResourceId: opts.resourceId,
@@ -284,16 +348,32 @@ export class Router {
         policy,
         attempts: 0,
         status: "error",
-        errorClass: statusCode === 404 ? "unsupported" : statusCode === 429 ? "rate_limit" : "provider_unavailable",
+        errorClass:
+          statusCode === 404
+            ? "unsupported"
+            : statusCode === 429
+              ? "rate_limit"
+              : "provider_unavailable",
         errorMessage: reason,
         latencyMs: Date.now() - started,
       });
-      throw new RouterError(reason, { statusCode, code, errorClass: statusCode === 404 ? "unsupported" : statusCode === 429 ? "rate_limit" : "provider_unavailable" });
+      throw new RouterError(reason, {
+        statusCode,
+        code,
+        errorClass:
+          statusCode === 404
+            ? "unsupported"
+            : statusCode === 429
+              ? "rate_limit"
+              : "provider_unavailable",
+      });
     }
 
     // Same-score keys of one provider take turns. On failure, walk the rest.
     const queue = this.orderAttempts(eligible);
-    const budget = credentialPinned ? 1 : Math.min(queue.length, this.maxAttempts);
+    const budget = credentialPinned
+      ? 1
+      : Math.min(queue.length, this.maxAttempts);
     let attempts = 0;
     let lastError: RouterError | null = null;
     const tried = new Set<string>();
@@ -303,7 +383,12 @@ export class Router {
       if (tried.has(candidate.route.routeId)) continue;
       // Provider-pinned requests stay within the pinned provider unless
       // the caller explicitly opts into cross-provider fallback.
-      if (providerPin && !allowCross && candidate.route.providerId !== providerPin) continue;
+      if (
+        providerPin &&
+        !allowCross &&
+        candidate.route.providerId !== providerPin
+      )
+        continue;
       tried.add(candidate.route.routeId);
       attempts += 1;
 
@@ -319,7 +404,11 @@ export class Router {
       try {
         const response = await adapter.execute(opts.normalized, resolved, ctx);
         const latencyMs = Date.now() - opStart;
-        this.store.recordSuccess(resolved.credentialId, resolved.providerResourceId, latencyMs);
+        this.store.recordSuccess(
+          resolved.credentialId,
+          resolved.providerResourceId,
+          latencyMs,
+        );
         this.accountUsage(requestId, resolved, response);
 
         const usage = extractUsage(response);
@@ -354,14 +443,13 @@ export class Router {
         };
       } catch (err) {
         const classified = adapter.classifyError(err);
-        const latencyMs = Date.now() - opStart;
-        void latencyMs;
-        this.store.recordFailure(
+        // noteAttemptFailure() records the failure (and retires the
+        // key on 401) — do not also call recordFailure() here.
+        this.noteAttemptFailure(
           resolved.credentialId,
           resolved.providerResourceId,
-          classified.errorClass,
+          classified,
         );
-        this.noteAttemptFailure(resolved.credentialId, resolved.providerResourceId, classified);
 
         lastError = new RouterError(classified.message, {
           statusCode: mapToHttpStatus(classified.errorClass),
@@ -425,11 +513,20 @@ export class Router {
       opts.requestedTokens ?? null,
     );
     if (eligible.length === 0) {
-      throw this.noRouteError(opts, providerPin, filtered, requestId, started, policy);
+      throw this.noRouteError(
+        opts,
+        providerPin,
+        filtered,
+        requestId,
+        started,
+        policy,
+      );
     }
 
     const queue = this.orderAttempts(eligible);
-    const budget = credentialPinned ? 1 : Math.min(queue.length, this.maxAttempts);
+    const budget = credentialPinned
+      ? 1
+      : Math.min(queue.length, this.maxAttempts);
     const tried = new Set<string>();
     let attempts = 0;
     let lastError: RouterError | null = null;
@@ -437,16 +534,38 @@ export class Router {
     while (queue.length > 0 && attempts < budget) {
       const candidate = queue.shift()!;
       if (tried.has(candidate.route.routeId)) continue;
-      if (providerPin && !allowCross && candidate.route.providerId !== providerPin) continue;
+      if (
+        providerPin &&
+        !allowCross &&
+        candidate.route.providerId !== providerPin
+      )
+        continue;
       tried.add(candidate.route.routeId);
       attempts += 1;
 
       const resolved = this.resolveRoute(candidate.route);
       const adapter = this.registry.require(resolved.providerId);
       if (!adapter.executeStream) {
-        lastError = new RouterError(`provider ${resolved.providerId} does not support streaming`, {
-          statusCode: 400, code: "streaming_unsupported", errorClass: "unsupported", attempts,
-        });
+        lastError = new RouterError(
+          `provider ${resolved.providerId} does not support streaming`,
+          {
+            statusCode: 400,
+            code: "streaming_unsupported",
+            errorClass: "unsupported",
+            attempts,
+          },
+        );
+        this.logStreamAttemptFailure(
+          requestId,
+          opts,
+          policy,
+          candidate,
+          resolved,
+          attempts,
+          "unsupported",
+          lastError.message,
+          started,
+        );
         continue;
       }
       const ctx: AdapterContext = {
@@ -457,10 +576,13 @@ export class Router {
       };
       const opStart = Date.now();
       try {
-        const iter = adapter.executeStream(opts.normalized, resolved, ctx)[Symbol.asyncIterator]();
+        const iter = adapter
+          .executeStream(opts.normalized, resolved, ctx)
+          [Symbol.asyncIterator]();
         // First chunk commits the route. Failure before it → next route.
         const first = await iter.next();
-        if (first.done) throw new Error("upstream closed stream without chunks");
+        if (first.done)
+          throw new Error("upstream closed stream without chunks");
         const firstChunk = first.value;
         const rest: AsyncIterable<StreamChunk> = {
           [Symbol.asyncIterator]: async function* () {
@@ -469,26 +591,64 @@ export class Router {
           },
         };
         const candidateReason = candidate.reason;
-        const finish = (info: { fullText: string; usage: StreamChunk["usage"]; aborted: boolean; error?: string }) => {
+        const finish = (info: {
+          fullText: string;
+          usage: StreamChunk["usage"];
+          aborted: boolean;
+          error?: string;
+        }) => {
           const latencyMs = Date.now() - opStart;
           if (info.aborted || info.error) {
-            this.store.recordFailure(resolved.credentialId, resolved.providerResourceId, "provider_unavailable");
+            this.store.recordFailure(
+              resolved.credentialId,
+              resolved.providerResourceId,
+              "provider_unavailable",
+            );
           } else {
-            this.store.recordSuccess(resolved.credentialId, resolved.providerResourceId, latencyMs);
+            this.store.recordSuccess(
+              resolved.credentialId,
+              resolved.providerResourceId,
+              latencyMs,
+            );
           }
           const promptEst = estimateTokensOf(opts.normalized);
-          const completionEst = Math.max(1, Math.ceil(info.fullText.length / 4));
+          const completionEst = Math.max(
+            1,
+            Math.ceil(info.fullText.length / 4),
+          );
           const usage = info.usage ?? {
             promptTokens: promptEst,
             completionTokens: completionEst,
             totalTokens: promptEst + completionEst,
           };
           try {
-            this.store.recordUsage({ requestId, credentialId: resolved.credentialId, providerResourceId: resolved.providerResourceId, metric: "requests", quantity: 1 });
-            this.store.recordUsage({ requestId, credentialId: resolved.credentialId, providerResourceId: resolved.providerResourceId, metric: "total_tokens", quantity: usage.totalTokens });
-            this.store.incrementQuotaUsage(resolved.credentialId, "requests", 1);
-            this.store.incrementQuotaUsage(resolved.credentialId, "total_tokens", usage.totalTokens);
-          } catch { /* accounting never breaks the path */ }
+            // Mirror accountUsage()'s metric set so streams and
+            // non-streams account identically.
+            const record = (
+              metric: QuotaWindow["metric"],
+              quantity: number,
+            ) => {
+              this.store.recordUsage({
+                requestId,
+                credentialId: resolved.credentialId,
+                providerResourceId: resolved.providerResourceId,
+                metric,
+                quantity,
+              });
+              this.store.incrementQuotaUsage(
+                resolved.credentialId,
+                metric,
+                quantity,
+                resolved.providerResourceId,
+              );
+            };
+            record("requests", 1);
+            record("total_tokens", usage.totalTokens);
+            record("input_tokens", usage.promptTokens);
+            record("output_tokens", usage.completionTokens);
+          } catch {
+            /* accounting never breaks the path */
+          }
           this.store.appendRequestLog({
             id: `${requestId}:stream`,
             requestedResourceId: opts.resourceId,
@@ -504,7 +664,8 @@ export class Router {
             selectionReason: candidateReason,
             attempts,
             status: info.aborted || info.error ? "error" : "success",
-            errorClass: info.aborted || info.error ? "provider_unavailable" : null,
+            errorClass:
+              info.aborted || info.error ? "provider_unavailable" : null,
             errorMessage: info.error ?? null,
             latencyMs: Date.now() - started,
             promptTokens: usage.promptTokens,
@@ -512,20 +673,48 @@ export class Router {
             totalTokens: usage.totalTokens,
           });
         };
-        return { requestId, stream: rest, route: resolved, attempts, policy, selectionReason: candidateReason, finish };
+        return {
+          requestId,
+          stream: rest,
+          route: resolved,
+          attempts,
+          policy,
+          selectionReason: candidateReason,
+          finish,
+        };
       } catch (err) {
         const classified = adapter.classifyError(err);
-        this.noteAttemptFailure(resolved.credentialId, resolved.providerResourceId, classified);
+        this.noteAttemptFailure(
+          resolved.credentialId,
+          resolved.providerResourceId,
+          classified,
+        );
         lastError = new RouterError(classified.message, {
           statusCode: mapToHttpStatus(classified.errorClass),
           code: `upstream_${classified.errorClass}`,
           errorClass: classified.errorClass,
           attempts,
         });
+        // Failed attempts before the first chunk are logged like the
+        // non-stream path — otherwise they never appear in /api/requests.
+        this.logStreamAttemptFailure(
+          requestId,
+          opts,
+          policy,
+          candidate,
+          resolved,
+          attempts,
+          classified.errorClass,
+          classified.message,
+          started,
+        );
         if (credentialPinned || STOP_FAILOVER.has(classified.errorClass)) break;
       }
     }
-    throw lastError ?? this.noRouteError(opts, providerPin, filtered, requestId, started, policy);
+    throw (
+      lastError ??
+      this.noRouteError(opts, providerPin, filtered, requestId, started, policy)
+    );
   }
 
   private noRouteError(
@@ -539,9 +728,22 @@ export class Router {
     const reason = filtered.length
       ? `no eligible routes: ${filtered[0].reason}${filtered.length > 1 ? ` (+${filtered.length - 1} more)` : ""}`
       : `unknown resource or no routes configured for ${opts.resourceId}`;
-    const pressured = filtered.some((f) => /quota|rate limit|exhausted|cooldown/i.test(f.reason));
-    const statusCode = pressured ? 429 : providerPin && filtered.length ? 404 : filtered.length ? 503 : 404;
-    const code = statusCode === 404 ? "route_not_found" : statusCode === 429 ? "rate_limited" : "no_eligible_routes";
+    const pressured = filtered.some((f) =>
+      /quota|rate limit|exhausted|cooldown/i.test(f.reason),
+    );
+    const statusCode = pressured
+      ? 429
+      : providerPin && filtered.length
+        ? 404
+        : filtered.length
+          ? 503
+          : 404;
+    const code =
+      statusCode === 404
+        ? "route_not_found"
+        : statusCode === 429
+          ? "rate_limited"
+          : "no_eligible_routes";
     this.store.appendRequestLog({
       id: requestId,
       requestedResourceId: opts.resourceId,
@@ -552,13 +754,57 @@ export class Router {
       policy,
       attempts: 0,
       status: "error",
-      errorClass: statusCode === 404 ? "unsupported" : statusCode === 429 ? "rate_limit" : "provider_unavailable",
+      errorClass:
+        statusCode === 404
+          ? "unsupported"
+          : statusCode === 429
+            ? "rate_limit"
+            : "provider_unavailable",
       errorMessage: reason,
       latencyMs: Date.now() - started,
     });
     return new RouterError(reason, {
-      statusCode, code,
-      errorClass: statusCode === 404 ? "unsupported" : statusCode === 429 ? "rate_limit" : "provider_unavailable",
+      statusCode,
+      code,
+      errorClass:
+        statusCode === 404
+          ? "unsupported"
+          : statusCode === 429
+            ? "rate_limit"
+            : "provider_unavailable",
+    });
+  }
+
+  /** Log a failed stream attempt before the route commits (mirrors execute()'s per-attempt log). */
+  private logStreamAttemptFailure(
+    requestId: string,
+    opts: ExecuteOptions,
+    policy: RoutingPolicyName,
+    candidate: ScoredCandidate,
+    resolved: ResolvedRoute,
+    attempts: number,
+    errorClass: ProviderErrorClass,
+    errorMessage: string,
+    started: number,
+  ): void {
+    this.store.appendRequestLog({
+      id: `${requestId}:attempt${attempts}`,
+      requestedResourceId: opts.resourceId,
+      requestedCapability: opts.capability,
+      providerPin: opts.hint?.provider ?? null,
+      accountPin: opts.hint?.account ?? null,
+      credentialPin: opts.hint?.credential ?? null,
+      policy,
+      selectedProviderId: resolved.providerId,
+      selectedAccountId: resolved.accountId,
+      selectedCredentialId: resolved.credentialId,
+      selectedUpstreamId: resolved.upstreamId,
+      selectionReason: candidate.reason,
+      attempts,
+      status: "error",
+      errorClass,
+      errorMessage,
+      latencyMs: Date.now() - started,
     });
   }
 
@@ -600,24 +846,43 @@ export class Router {
   }
 
   /** Record the failure. A 401 retires the key; other key errors only cool it down. */
-  private noteAttemptFailure(credentialId: string, providerResourceId: string, classified: ProviderError): void {
-    this.store.recordFailure(credentialId, providerResourceId, classified.errorClass);
+  private noteAttemptFailure(
+    credentialId: string,
+    providerResourceId: string,
+    classified: ProviderError,
+  ): void {
+    this.store.recordFailure(
+      credentialId,
+      providerResourceId,
+      classified.errorClass,
+    );
     if (classified.errorClass === "auth" && classified.statusCode === 401) {
       try {
         this.store.markCredentialValidated(credentialId, false);
-      } catch { /* store may be read-only in tests */ }
+      } catch {
+        /* store may be read-only in tests */
+      }
     }
   }
 
   /** Decrypt credential secret and attach the effective base URL. Secret never touches logs. */
   private resolveRoute(route: Route): ResolvedRoute {
     const cred = this.store.getCredential(route.credentialId);
-    if (!cred) throw new RouterError(`credential not found: ${route.credentialId}`, { statusCode: 500 });
+    if (!cred)
+      throw new RouterError(`credential not found: ${route.credentialId}`, {
+        statusCode: 500,
+      });
     const provider = this.store.getProvider(route.providerId);
     const effectiveBaseUrl =
-      provider?.baseUrl ?? this.defaultBaseUrls[route.providerId] ?? this.defaultBaseUrls["*"] ?? "";
+      provider?.baseUrl ??
+      this.defaultBaseUrls[route.providerId] ??
+      this.defaultBaseUrls["*"] ??
+      "";
     if (!effectiveBaseUrl) {
-      throw new RouterError(`no base URL configured for provider ${route.providerId}`, { statusCode: 500 });
+      throw new RouterError(
+        `no base URL configured for provider ${route.providerId}`,
+        { statusCode: 500 },
+      );
     }
     return {
       ...route,
@@ -626,7 +891,11 @@ export class Router {
     };
   }
 
-  private accountUsage(requestId: string, route: ResolvedRoute, response: NormalizedResponse): void {
+  private accountUsage(
+    requestId: string,
+    route: ResolvedRoute,
+    response: NormalizedResponse,
+  ): void {
     const usage = extractUsage(response);
     try {
       // Tool accounting drives the live rate windows (searches/pages/crawl_units).
@@ -639,7 +908,12 @@ export class Router {
           metric: toolMetric.metric,
           quantity: toolMetric.quantity,
         });
-        this.store.incrementQuotaUsage(route.credentialId, toolMetric.metric, toolMetric.quantity);
+        this.store.incrementQuotaUsage(
+          route.credentialId,
+          toolMetric.metric,
+          toolMetric.quantity,
+          route.providerResourceId,
+        );
       }
       if (usage?.totalTokens) {
         this.store.recordUsage({
@@ -649,7 +923,12 @@ export class Router {
           metric: "total_tokens",
           quantity: usage.totalTokens,
         });
-        this.store.incrementQuotaUsage(route.credentialId, "total_tokens", usage.totalTokens);
+        this.store.incrementQuotaUsage(
+          route.credentialId,
+          "total_tokens",
+          usage.totalTokens,
+          route.providerResourceId,
+        );
       }
       if (usage?.promptTokens) {
         this.store.recordUsage({
@@ -659,7 +938,12 @@ export class Router {
           metric: "input_tokens",
           quantity: usage.promptTokens,
         });
-        this.store.incrementQuotaUsage(route.credentialId, "input_tokens", usage.promptTokens);
+        this.store.incrementQuotaUsage(
+          route.credentialId,
+          "input_tokens",
+          usage.promptTokens,
+          route.providerResourceId,
+        );
       }
       if (usage?.completionTokens) {
         this.store.recordUsage({
@@ -669,7 +953,12 @@ export class Router {
           metric: "output_tokens",
           quantity: usage.completionTokens,
         });
-        this.store.incrementQuotaUsage(route.credentialId, "output_tokens", usage.completionTokens);
+        this.store.incrementQuotaUsage(
+          route.credentialId,
+          "output_tokens",
+          usage.completionTokens,
+          route.providerResourceId,
+        );
       }
       this.store.recordUsage({
         requestId,
@@ -678,8 +967,15 @@ export class Router {
         metric: "requests",
         quantity: 1,
       });
-      this.store.incrementQuotaUsage(route.credentialId, "requests", 1);
-    } catch { /* accounting must never break the response path */ }
+      this.store.incrementQuotaUsage(
+        route.credentialId,
+        "requests",
+        1,
+        route.providerResourceId,
+      );
+    } catch {
+      /* accounting must never break the response path */
+    }
   }
 }
 
@@ -693,9 +989,15 @@ function toolQuotaMetric(
     case "web.scrape":
       return { metric: "pages", quantity: 1 };
     case "web.extract":
-      return { metric: "pages", quantity: Math.max(1, response.body.results.length) };
+      return {
+        metric: "pages",
+        quantity: Math.max(1, response.body.results.length),
+      };
     case "web.crawl":
-      return { metric: "crawl_units", quantity: Math.max(1, response.body.pages.length) };
+      return {
+        metric: "crawl_units",
+        quantity: Math.max(1, response.body.pages.length),
+      };
     case "web.map":
       return { metric: "crawl_units", quantity: 1 };
     default:
@@ -703,9 +1005,11 @@ function toolQuotaMetric(
   }
 }
 
-function extractUsage(
-  response: NormalizedResponse,
-): { promptTokens: number; completionTokens: number; totalTokens: number } | null {
+function extractUsage(response: NormalizedResponse): {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+} | null {
   if (response.kind === "llm.chat" && response.body.usage) {
     return {
       promptTokens: response.body.usage.promptTokens,
@@ -719,7 +1023,7 @@ function extractUsage(
 function estimateTokensOf(request: NormalizedRequest): number {
   if (request.kind !== "llm.chat") return 64;
   const chars = request.body.messages.reduce((n, m) => n + m.content.length, 0);
-  return Math.max(1, Math.ceil(chars / 4));
+  return estimateTokensFromChars(chars);
 }
 
 function mapToHttpStatus(errorClass: ProviderErrorClass): number {

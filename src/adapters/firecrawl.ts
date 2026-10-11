@@ -1,8 +1,4 @@
-import {
-  defineToolAdapter,
-  pollCrawlJob,
-  type ToolCall,
-} from "./tool-base.js";
+import { defineToolAdapter, pollCrawlJob, type ToolCall } from "./tool-base.js";
 import type {
   AdapterContext,
   NormalizedRequest,
@@ -30,7 +26,10 @@ interface FcScrapeData {
   metadata?: { title?: string; sourceURL?: string; url?: string };
 }
 
-async function scrapeOne(call: ToolCall, url: string): Promise<{ url: string; title?: string; markdown: string }> {
+async function scrapeOne(
+  call: ToolCall,
+  url: string,
+): Promise<{ url: string; title?: string; markdown: string }> {
   const { json } = await call.post<{ success?: boolean; data?: FcScrapeData }>(
     "/v2/scrape",
     { url, formats: ["markdown"], onlyMainContent: true },
@@ -58,19 +57,28 @@ export const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "searches",
         run: async (call) => {
-          if (call.normalized.kind !== "web.search") throw new Error("firecrawl search: wrong request kind");
+          if (call.normalized.kind !== "web.search")
+            throw new Error("firecrawl search: wrong request kind");
           const q = call.normalized.body;
-          const { json } = await call.post<{ success?: boolean; data?: FcSearchHit[] }>(
-            "/v2/search",
-            { query: q.query, limit: Math.min(q.maxResults, 10), sources: ["web"], scrapeOptions: { formats: ["markdown"] } },
-          );
+          const { json } = await call.post<{
+            success?: boolean;
+            data?: FcSearchHit[];
+          }>("/v2/search", {
+            query: q.query,
+            limit: Math.min(q.maxResults, 10),
+            sources: ["web"],
+            scrapeOptions: { formats: ["markdown"] },
+          });
           return {
             kind: "web.search",
             body: {
               results: (json.data ?? []).map((r) => ({
                 title: String(r.title ?? ""),
                 url: String(r.url ?? ""),
-                snippet: String(r.markdown ?? r.description ?? "").slice(0, 2000),
+                snippet: String(r.markdown ?? r.description ?? "").slice(
+                  0,
+                  2000,
+                ),
               })),
             },
           };
@@ -82,11 +90,19 @@ export const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "pages",
         run: async (call) => {
-          if (call.normalized.kind !== "web.scrape") throw new Error("firecrawl scrape: wrong request kind");
+          if (call.normalized.kind !== "web.scrape")
+            throw new Error("firecrawl scrape: wrong request kind");
           const page = await scrapeOne(call, call.normalized.body.url);
           return {
             kind: "web.scrape",
-            body: { url: page.url, title: page.title, markdown: page.markdown.slice(0, call.normalized.body.maxChars ?? 50_000) },
+            body: {
+              url: page.url,
+              title: page.title,
+              markdown: page.markdown.slice(
+                0,
+                call.normalized.body.maxChars ?? 50_000,
+              ),
+            },
           };
         },
       },
@@ -96,14 +112,23 @@ export const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "pages",
         run: async (call) => {
-          if (call.normalized.kind !== "web.extract") throw new Error("firecrawl extract: wrong request kind");
+          if (call.normalized.kind !== "web.extract")
+            throw new Error("firecrawl extract: wrong request kind");
           const pages = await Promise.all(
             call.normalized.body.urls.map(async (url) => {
               try {
                 const p = await scrapeOne(call, url);
-                return { url: p.url, title: p.title, content: p.markdown.slice(0, 200_000) };
+                return {
+                  url: p.url,
+                  title: p.title,
+                  content: p.markdown.slice(0, 200_000),
+                };
               } catch (e) {
-                return { url, content: "", error: e instanceof Error ? e.message : String(e) };
+                return {
+                  url,
+                  content: "",
+                  error: e instanceof Error ? e.message : String(e),
+                };
               }
             }),
           );
@@ -116,22 +141,29 @@ export const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "crawl_units",
         run: async (call) => {
-          if (call.normalized.kind !== "web.crawl") throw new Error("firecrawl crawl: wrong request kind");
-          const { url, limit, includePaths, excludePaths } = call.normalized.body;
-          const { json: started } = await call.post<{ success?: boolean; id?: string }>(
-            "/v2/crawl",
-            {
-              url,
-              limit: limit ?? 20,
-              includePaths,
-              excludePaths,
-              scrapeOptions: { formats: ["markdown"], onlyMainContent: true },
-            },
-          );
-          if (!started.id) throw new Error("firecrawl crawl returned no job id");
+          if (call.normalized.kind !== "web.crawl")
+            throw new Error("firecrawl crawl: wrong request kind");
+          const { url, limit, includePaths, excludePaths } =
+            call.normalized.body;
+          const { json: started } = await call.post<{
+            success?: boolean;
+            id?: string;
+          }>("/v2/crawl", {
+            url,
+            limit: limit ?? 20,
+            includePaths,
+            excludePaths,
+            scrapeOptions: { formats: ["markdown"], onlyMainContent: true },
+          });
+          if (!started.id)
+            throw new Error("firecrawl crawl returned no job id");
           const done = await pollCrawlJob<{
             status?: string;
-            data?: Array<{ url?: string; markdown?: string; metadata?: { title?: string } }>;
+            data?: Array<{
+              url?: string;
+              markdown?: string;
+              metadata?: { title?: string };
+            }>;
           }>(call, started.id);
           return {
             kind: "web.crawl",
@@ -139,7 +171,9 @@ export const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
               pages: (done.data ?? []).map((p) => ({
                 url: String(p.url ?? ""),
                 title: p.metadata?.title ? String(p.metadata.title) : undefined,
-                markdown: p.markdown ? String(p.markdown).slice(0, 50_000) : undefined,
+                markdown: p.markdown
+                  ? String(p.markdown).slice(0, 50_000)
+                  : undefined,
               })),
             },
           };
@@ -151,7 +185,8 @@ export const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "crawl_units",
         run: async (call) => {
-          if (call.normalized.kind !== "web.map") throw new Error("firecrawl map: wrong request kind");
+          if (call.normalized.kind !== "web.map")
+            throw new Error("firecrawl map: wrong request kind");
           const { url, limit } = call.normalized.body;
           const { json } = await call.post<{
             success?: boolean;
@@ -164,7 +199,10 @@ export const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
                 .map((l) =>
                   typeof l === "string"
                     ? { url: l }
-                    : { url: String(l.url ?? ""), title: l.title ? String(l.title) : undefined },
+                    : {
+                        url: String(l.url ?? ""),
+                        title: l.title ? String(l.title) : undefined,
+                      },
                 )
                 .filter((l) => l.url),
             },

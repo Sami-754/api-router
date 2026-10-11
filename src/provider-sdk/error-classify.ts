@@ -10,7 +10,10 @@ export function classifyHttpStatus(
   providerCode?: string,
 ): ProviderError {
   const body = `${bodyText} ${providerCode ?? ""}`.toLowerCase();
-  const retryableFor = (errorClass: ProviderErrorClass, retryable: boolean): ProviderError => ({
+  const retryableFor = (
+    errorClass: ProviderErrorClass,
+    retryable: boolean,
+  ): ProviderError => ({
     errorClass,
     message: `upstream HTTP ${status}${providerCode ? ` (${providerCode})` : ""}`,
     retryable,
@@ -18,7 +21,7 @@ export function classifyHttpStatus(
     providerCode,
   });
 
-  if (status === 401 || status === 403) return retryableFor("auth", false);
+  if (status === 401) return retryableFor("auth", false);
   if (status === 400) {
     if (/context|too long|maximum context|tokens/.test(body)) {
       return retryableFor("context_limit", false);
@@ -37,6 +40,9 @@ export function classifyHttpStatus(
     if (/quota|credit|balance|payment/.test(body)) {
       return retryableFor("quota_exhausted", true);
     }
+    // 403 without quota/credit keywords is an auth failure; a bare
+    // 402 falls through to unknown (as before).
+    if (status === 403) return retryableFor("auth", false);
   }
   if (status === 408) return retryableFor("timeout", true);
   if (status >= 500) return retryableFor("provider_unavailable", true);

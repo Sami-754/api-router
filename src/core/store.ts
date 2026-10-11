@@ -44,6 +44,7 @@ export interface Store {
   listCredentials(accountId?: string): Credential[];
   updateCredentialStatus(id: string, status: Credential["status"]): void;
   markCredentialValidated(id: string, ok: boolean): void;
+  deleteCredential(id: string): void;
 
   // -- resources --
   upsertResource(r: Omit<Resource, "createdAt" | "updatedAt">): Resource;
@@ -53,10 +54,15 @@ export interface Store {
 
   // -- provider resources --
   upsertProviderResource(
-    r: Omit<ProviderResource, "createdAt" | "updatedAt" | "id"> & { id?: string },
+    r: Omit<ProviderResource, "createdAt" | "updatedAt" | "id"> & {
+      id?: string;
+    },
   ): ProviderResource;
   getProviderResource(id: string): ProviderResource | undefined;
-  listProviderResources(resourceId?: string, providerId?: string): ProviderResource[];
+  listProviderResources(
+    resourceId?: string,
+    providerId?: string,
+  ): ProviderResource[];
   setProviderResourceEnabled(id: string, enabled: boolean): void;
   deleteProviderResource(id: string): void;
 
@@ -79,10 +85,23 @@ export interface Store {
       observedAt?: string;
     },
   ): QuotaWindow;
-  incrementQuotaUsage(credentialId: string, metric: QuotaWindow["metric"], quantity: number): void;
+  /**
+   * Bump a quota window's used/remaining counters. When a provider
+   * resource is given, only global windows and windows scoped to that
+   * resource are updated — never windows scoped to another resource.
+   */
+  incrementQuotaUsage(
+    credentialId: string,
+    metric: QuotaWindow["metric"],
+    quantity: number,
+    providerResourceId?: string,
+  ): void;
 
   // -- health --
-  getHealth(credentialId: string, providerResourceId?: string | null): HealthSnapshot | undefined;
+  getHealth(
+    credentialId: string,
+    providerResourceId?: string | null,
+  ): HealthSnapshot | undefined;
   /**
    * Future cooldown that belongs to the whole API key (rate limit, quota, auth),
    * so one limited key is skipped for every model on that provider.
@@ -91,7 +110,11 @@ export interface Store {
     credentialId: string,
     nowMs?: number,
   ): { until: string; errorClass: ProviderErrorClass } | undefined;
-  recordSuccess(credentialId: string, providerResourceId: string | null, latencyMs: number): void;
+  recordSuccess(
+    credentialId: string,
+    providerResourceId: string | null,
+    latencyMs: number,
+  ): void;
   recordFailure(
     credentialId: string,
     providerResourceId: string | null,
@@ -101,9 +124,17 @@ export interface Store {
   clearCooldown(credentialId: string, providerResourceId?: string | null): void;
 
   // -- usage + request logs --
-  recordUsage(e: Omit<UsageEvent, "id" | "observedAt"> & { observedAt?: string }): UsageEvent;
-  /** Sum of a metric for a credential since an ISO timestamp (rate windows). */
-  sumUsage(credentialId: string, metric: UsageEvent["metric"], sinceIso: string): number;
+  recordUsage(
+    e: Omit<UsageEvent, "id" | "observedAt"> & { observedAt?: string },
+  ): UsageEvent;
+  /** Sum of a metric for a credential since an ISO timestamp (rate windows).
+   *  When a provider resource is given, global + that resource's events count. */
+  sumUsage(
+    credentialId: string,
+    metric: UsageEvent["metric"],
+    sinceIso: string,
+    providerResourceId?: string,
+  ): number;
   appendRequestLog(l: Omit<RequestLog, "createdAt">): RequestLog;
   listRequestLogs(limit?: number): RequestLog[];
   getRequestLog(id: string): RequestLog | undefined;

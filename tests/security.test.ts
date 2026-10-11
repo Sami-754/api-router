@@ -8,7 +8,11 @@ describe("security + observability", () => {
     const create = await app.inject({
       method: "POST",
       url: "/api/credentials",
-      payload: { accountId: "groq-main", label: "t", secret: "super-secret-key-123" },
+      payload: {
+        accountId: "groq-main",
+        label: "t",
+        secret: "super-secret-key-123",
+      },
     });
     expect(create.statusCode).toBe(201);
     const id = create.json().data.id as string;
@@ -26,7 +30,10 @@ describe("security + observability", () => {
     const res = await app.inject({
       method: "POST",
       url: "/v1/chat/completions",
-      payload: { model: "groq::nemotron-3-super-120b", messages: [{ role: "user", content: "hi" }] },
+      payload: {
+        model: "groq::nemotron-3-super-120b",
+        messages: [{ role: "user", content: "hi" }],
+      },
     });
     expect(res.statusCode).toBe(200);
     const logs = store.listRequestLogs(10);
@@ -42,9 +49,15 @@ describe("security + observability", () => {
     await app.inject({
       method: "POST",
       url: "/v1/chat/completions",
-      payload: { model: "nemotron-3-super-120b", messages: [{ role: "user", content: "hi" }] },
+      payload: {
+        model: "nemotron-3-super-120b",
+        messages: [{ role: "user", content: "hi" }],
+      },
     });
-    const list = await app.inject({ method: "GET", url: "/api/requests?limit=5" });
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/requests?limit=5",
+    });
     expect(list.statusCode).toBe(200);
     const body = JSON.stringify(list.json());
     expect(body).not.toContain("groq-secret-1");
@@ -52,6 +65,8 @@ describe("security + observability", () => {
   });
 
   it("validateSecret round-trips", () => {
-    expect(decryptSecret(encryptSecret("abc", "x".repeat(32)), "x".repeat(32))).toBe("abc");
+    expect(
+      decryptSecret(encryptSecret("abc", "x".repeat(32)), "x".repeat(32)),
+    ).toBe("abc");
   });
 });

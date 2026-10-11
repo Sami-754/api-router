@@ -23,11 +23,16 @@ function sse(chunks: string[], errorAfter = -1): Response {
       c.close();
     },
   });
-  return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  return new Response(stream, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
 }
 
 const chunk = (content: string, finish: string | null = null) =>
-  JSON.stringify({ choices: [{ index: 0, delta: { content }, finish_reason: finish }] });
+  JSON.stringify({
+    choices: [{ index: 0, delta: { content }, finish_reason: finish }],
+  });
 
 /** Stream that delivers one chunk, then fails on the next pull (true mid-stream error). */
 function sseFailingMidway(firstChunk: string): Response {
@@ -39,7 +44,10 @@ function sseFailingMidway(firstChunk: string): Response {
       else c.error(new Error("mid-stream boom"));
     },
   });
-  return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  return new Response(stream, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
 }
 
 function streamBody(model: string) {
@@ -51,7 +59,11 @@ describe("streaming", () => {
     const mock: typeof fetch = async () =>
       sse([chunk("Hello"), chunk(" world", "stop")]);
     const { app } = await createTestSetup({ fetchImpl: mock });
-    const res = await app.inject({ method: "POST", url: "/v1/chat/completions", payload: streamBody("groq::nemotron-3-super-120b") });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: streamBody("groq::nemotron-3-super-120b"),
+    });
     expect(res.statusCode).toBe(200);
     expect(res.headers["content-type"]).toContain("text/event-stream");
     expect(res.headers["x-router-via"]).toMatch(/^groq\//);
@@ -62,13 +74,18 @@ describe("streaming", () => {
 
   it("falls back to the next route when the first fails before the first chunk", async () => {
     const mock: typeof fetch = async (url) => {
-      if (String(url).includes("groq")) return new Response("overloaded", { status: 500 });
+      if (String(url).includes("groq"))
+        return new Response("overloaded", { status: 500 });
       return sse([chunk("from-openrouter", "stop")]);
     };
     const { app } = await createTestSetup({ fetchImpl: mock });
     const res = await app.inject({
-      method: "POST", url: "/v1/chat/completions",
-      payload: { ...streamBody("nemotron-3-super-120b"), routing: { policy: "priority" } },
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        ...streamBody("nemotron-3-super-120b"),
+        routing: { policy: "priority" },
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.headers["x-router-via"]).toMatch(/^openrouter\//);
@@ -86,7 +103,8 @@ describe("streaming", () => {
     };
     const { app, store } = await createTestSetup({ fetchImpl: mock });
     const res = await app.inject({
-      method: "POST", url: "/v1/chat/completions",
+      method: "POST",
+      url: "/v1/chat/completions",
       payload: { ...streamBody("groq::nemotron-3-super-120b") },
     });
     expect(res.statusCode).toBe(200);
@@ -100,12 +118,20 @@ describe("streaming", () => {
 
   it("logs successful streams with token accounting", async () => {
     const mock: typeof fetch = async () =>
-      sse([JSON.stringify({
-        choices: [{ index: 0, delta: { content: "hi" }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
-      })]);
+      sse([
+        JSON.stringify({
+          choices: [
+            { index: 0, delta: { content: "hi" }, finish_reason: "stop" },
+          ],
+          usage: { prompt_tokens: 4, completion_tokens: 2, total_tokens: 6 },
+        }),
+      ]);
     const { app, store } = await createTestSetup({ fetchImpl: mock });
-    const res = await app.inject({ method: "POST", url: "/v1/chat/completions", payload: streamBody("nemotron-3-super-120b") });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: streamBody("nemotron-3-super-120b"),
+    });
     expect(res.statusCode).toBe(200);
     const ok = store.listRequestLogs(5).find((l) => l.status === "success");
     expect(ok?.totalTokens).toBe(6);

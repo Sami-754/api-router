@@ -29,12 +29,19 @@ interface TavilyExtractHit {
 }
 
 async function runSearch(call: ToolCall): Promise<NormalizedResponse> {
-  if (call.normalized.kind !== "web.search") throw new Error("tavily search: wrong request kind");
+  if (call.normalized.kind !== "web.search")
+    throw new Error("tavily search: wrong request kind");
   const q = call.normalized.body;
-  const upstream: Record<string, unknown> = { query: q.query, max_results: q.maxResults };
+  const upstream: Record<string, unknown> = {
+    query: q.query,
+    max_results: q.maxResults,
+  };
   if (q.includeDomains?.length) upstream.include_domains = q.includeDomains;
   if (q.excludeDomains?.length) upstream.exclude_domains = q.excludeDomains;
-  const { json } = await call.post<{ results?: TavilySearchHit[] }>("/search", upstream);
+  const { json } = await call.post<{ results?: TavilySearchHit[] }>(
+    "/search",
+    upstream,
+  );
   return {
     kind: "web.search",
     body: {
@@ -48,7 +55,10 @@ async function runSearch(call: ToolCall): Promise<NormalizedResponse> {
   };
 }
 
-const probe = { path: "/search", body: () => ({ query: "test", max_results: 1 }) };
+const probe = {
+  path: "/search",
+  body: () => ({ query: "test", max_results: 1 }),
+};
 
 export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
   defineToolAdapter({
@@ -72,14 +82,18 @@ export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "pages",
         run: async (call) => {
-          if (call.normalized.kind !== "web.extract") throw new Error("tavily extract: wrong request kind");
+          if (call.normalized.kind !== "web.extract")
+            throw new Error("tavily extract: wrong request kind");
           const { urls, query } = call.normalized.body;
           const { json } = await call.post<{
             results?: TavilyExtractHit[];
             failed_results?: Array<{ url?: string; error?: string }>;
           }>("/extract", { urls, query, format: "markdown" });
           const failed = new Map(
-            (json.failed_results ?? []).map((f) => [String(f.url ?? ""), String(f.error ?? "extraction failed")]),
+            (json.failed_results ?? []).map((f) => [
+              String(f.url ?? ""),
+              String(f.error ?? "extraction failed"),
+            ]),
           );
           return {
             kind: "web.extract",
@@ -87,7 +101,10 @@ export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
               results: (json.results ?? []).map((r) => ({
                 url: String(r.url ?? ""),
                 title: r.title ? String(r.title) : undefined,
-                content: String(r.raw_content ?? r.content ?? "").slice(0, 200_000),
+                content: String(r.raw_content ?? r.content ?? "").slice(
+                  0,
+                  200_000,
+                ),
                 error: failed.get(String(r.url ?? "")),
               })),
             },
@@ -100,7 +117,8 @@ export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "pages",
         run: async (call) => {
-          if (call.normalized.kind !== "web.scrape") throw new Error("tavily scrape: wrong request kind");
+          if (call.normalized.kind !== "web.scrape")
+            throw new Error("tavily scrape: wrong request kind");
           const { url } = call.normalized.body;
           const { json } = await call.post<{
             results?: TavilyExtractHit[];
@@ -110,7 +128,11 @@ export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
           if (!hit) {
             const err = json.failed_results?.[0]?.error ?? "extraction failed";
             throw Object.assign(new Error(`tavily scrape failed: ${err}`), {
-              providerError: { errorClass: "provider_unavailable", message: err, retryable: true },
+              providerError: {
+                errorClass: "provider_unavailable",
+                message: err,
+                retryable: true,
+              },
             });
           }
           return {
@@ -118,7 +140,10 @@ export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
             body: {
               url: String(hit.url ?? url),
               title: hit.title ? String(hit.title) : undefined,
-              markdown: String(hit.raw_content ?? hit.content ?? "").slice(0, call.normalized.body.maxChars ?? 50_000),
+              markdown: String(hit.raw_content ?? hit.content ?? "").slice(
+                0,
+                call.normalized.body.maxChars ?? 50_000,
+              ),
             },
           };
         },
@@ -129,22 +154,29 @@ export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "crawl_units",
         run: async (call) => {
-          if (call.normalized.kind !== "web.crawl") throw new Error("tavily crawl: wrong request kind");
-          const { url, limit, includePaths, excludePaths } = call.normalized.body;
-          const { json } = await call.post<{ results?: TavilyExtractHit[] }>("/crawl", {
-            url,
-            max_depth: 2,
-            max_breadth: 20,
-            limit: limit ?? 20,
-            select_paths: includePaths,
-            exclude_paths: excludePaths,
-          });
+          if (call.normalized.kind !== "web.crawl")
+            throw new Error("tavily crawl: wrong request kind");
+          const { url, limit, includePaths, excludePaths } =
+            call.normalized.body;
+          const { json } = await call.post<{ results?: TavilyExtractHit[] }>(
+            "/crawl",
+            {
+              url,
+              max_depth: 2,
+              max_breadth: 20,
+              limit: limit ?? 20,
+              select_paths: includePaths,
+              exclude_paths: excludePaths,
+            },
+          );
           return {
             kind: "web.crawl",
             body: {
               pages: (json.results ?? []).map((r) => ({
                 url: String(r.url ?? ""),
-                markdown: String(r.raw_content ?? r.content ?? "").slice(0, 50_000) || undefined,
+                markdown:
+                  String(r.raw_content ?? r.content ?? "").slice(0, 50_000) ||
+                  undefined,
               })),
             },
           };
@@ -156,18 +188,23 @@ export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
         probe,
         quotaMetric: "crawl_units",
         run: async (call) => {
-          if (call.normalized.kind !== "web.map") throw new Error("tavily map: wrong request kind");
+          if (call.normalized.kind !== "web.map")
+            throw new Error("tavily map: wrong request kind");
           const { url, limit } = call.normalized.body;
-          const { json } = await call.post<{ results?: Array<string | { url?: string }> }>("/map", {
+          const { json } = await call.post<{
+            results?: Array<string | { url?: string }>;
+          }>("/map", {
             url,
             limit: limit ?? 100,
           });
           return {
             kind: "web.map",
             body: {
-              links: (json.results ?? []).map((l) => ({
-                url: typeof l === "string" ? l : String(l.url ?? ""),
-              })).filter((l) => l.url),
+              links: (json.results ?? [])
+                .map((l) => ({
+                  url: typeof l === "string" ? l : String(l.url ?? ""),
+                }))
+                .filter((l) => l.url),
             },
           };
         },

@@ -21,7 +21,9 @@ export interface McpOptions {
 const providerField = z
   .string()
   .optional()
-  .describe("Pin to one provider (e.g. exa, tavily, firecrawl). Omit for auto-routing.");
+  .describe(
+    "Pin to one provider (e.g. exa, tavily, firecrawl). Omit for auto-routing.",
+  );
 
 const policyField = z
   .enum(["auto", "burn", "preserve", "fast", "reliable", "cheap", "priority"])
@@ -43,7 +45,10 @@ export function createMcpServer(opts: McpOptions): McpServer {
     version: opts.version ?? "0.1.0",
   });
 
-  const post = async (path: string, body: Record<string, unknown>): Promise<ToolResult> => {
+  const post = async (
+    path: string,
+    body: Record<string, unknown>,
+  ): Promise<ToolResult> => {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
@@ -62,13 +67,17 @@ export function createMcpServer(opts: McpOptions): McpServer {
       }
       if (!res.ok) {
         const msg =
-          (json as { error?: { message?: string } })?.error?.message ?? `router HTTP ${res.status}`;
+          (json as { error?: { message?: string } })?.error?.message ??
+          `router HTTP ${res.status}`;
         return { content: [{ type: "text", text: msg }], isError: true };
       }
       return { content: [{ type: "text", text: JSON.stringify(json) }] };
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      return { content: [{ type: "text", text: `router request failed: ${msg}` }], isError: true };
+      return {
+        content: [{ type: "text", text: `router request failed: ${msg}` }],
+        isError: true,
+      };
     } finally {
       clearTimeout(timer);
     }
@@ -82,15 +91,27 @@ export function createMcpServer(opts: McpOptions): McpServer {
   server.registerTool(
     "web_search",
     {
-      description: "Web search through the router (auto-routes across Exa/Tavily/Firecrawl keys with fallback).",
+      description:
+        "Web search through the router (auto-routes across Exa/Tavily/Firecrawl keys with fallback).",
       inputSchema: z.object({
         query: z.string().min(1).describe("Search query"),
-        maxResults: z.number().int().min(1).max(20).optional().describe("Max results (default 5)"),
+        maxResults: z
+          .number()
+          .int()
+          .min(1)
+          .max(20)
+          .optional()
+          .describe("Max results (default 5)"),
         provider: providerField,
         policy: policyField,
       }),
     },
-    async (a) => post("/v1/tools/search", { query: a.query, maxResults: a.maxResults, routing: routingOf(a) }),
+    async (a) =>
+      post("/v1/tools/search", {
+        query: a.query,
+        maxResults: a.maxResults,
+        routing: routingOf(a),
+      }),
   );
 
   server.registerTool(
@@ -103,7 +124,8 @@ export function createMcpServer(opts: McpOptions): McpServer {
         policy: policyField,
       }),
     },
-    async (a) => post("/v1/tools/scrape", { url: a.url, routing: routingOf(a) }),
+    async (a) =>
+      post("/v1/tools/scrape", { url: a.url, routing: routingOf(a) }),
   );
 
   server.registerTool(
@@ -117,21 +139,38 @@ export function createMcpServer(opts: McpOptions): McpServer {
         policy: policyField,
       }),
     },
-    async (a) => post("/v1/tools/extract", { urls: a.urls, query: a.query, routing: routingOf(a) }),
+    async (a) =>
+      post("/v1/tools/extract", {
+        urls: a.urls,
+        query: a.query,
+        routing: routingOf(a),
+      }),
   );
 
   server.registerTool(
     "web_crawl",
     {
-      description: "Crawl a site through the router (may take a while; polled server-side).",
+      description:
+        "Crawl a site through the router (may take a while; polled server-side).",
       inputSchema: z.object({
         url: z.string().url().describe("Starting URL"),
-        limit: z.number().int().min(1).max(200).optional().describe("Max pages (default 20)"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(200)
+          .optional()
+          .describe("Max pages (default 20)"),
         provider: providerField,
         policy: policyField,
       }),
     },
-    async (a) => post("/v1/tools/crawl", { url: a.url, limit: a.limit, routing: routingOf(a) }),
+    async (a) =>
+      post("/v1/tools/crawl", {
+        url: a.url,
+        limit: a.limit,
+        routing: routingOf(a),
+      }),
   );
 
   server.registerTool(
@@ -140,20 +179,37 @@ export function createMcpServer(opts: McpOptions): McpServer {
       description: "Discover URLs on a site through the router.",
       inputSchema: z.object({
         url: z.string().url().describe("Site URL"),
-        limit: z.number().int().min(1).max(1000).optional().describe("Max links (default 100)"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(1000)
+          .optional()
+          .describe("Max links (default 100)"),
         provider: providerField,
         policy: policyField,
       }),
     },
-    async (a) => post("/v1/tools/map", { url: a.url, limit: a.limit, routing: routingOf(a) }),
+    async (a) =>
+      post("/v1/tools/map", {
+        url: a.url,
+        limit: a.limit,
+        routing: routingOf(a),
+      }),
   );
 
   server.registerTool(
     "chat",
     {
-      description: "LLM chat through the router (auto-routes across provider keys; provider::model pins one).",
+      description:
+        "LLM chat through the router (auto-routes across provider keys; provider::model pins one).",
       inputSchema: z.object({
-        model: z.string().min(1).describe('Logical model ("nemotron-...") or pinned ("groq::nemotron-...")'),
+        model: z
+          .string()
+          .min(1)
+          .describe(
+            'Logical model ("nemotron-...") or pinned ("groq::nemotron-...")',
+          ),
         message: z.string().min(1).describe("User message"),
         provider: providerField,
         policy: policyField,
@@ -172,11 +228,16 @@ export function createMcpServer(opts: McpOptions): McpServer {
 
 // stdio entrypoint — only when executed directly (`pnpm mcp`), never on import.
 const invokedAs = process.argv[1] ?? "";
-if (invokedAs.endsWith("src/server/mcp.ts") || invokedAs.endsWith("dist/server/mcp.js")) {
+if (
+  invokedAs.endsWith("src/server/mcp.ts") ||
+  invokedAs.endsWith("dist/server/mcp.js")
+) {
   const server = createMcpServer({
     routerUrl: process.env.ROUTER_URL ?? "http://127.0.0.1:4500",
     timeoutMs: Number(process.env.ROUTER_TIMEOUT_MS ?? 90_000),
   });
   await server.connect(new StdioServerTransport());
-  console.error(`[api-router-mcp] serving tools from ${process.env.ROUTER_URL ?? "http://127.0.0.1:4500"}`);
+  console.error(
+    `[api-router-mcp] serving tools from ${process.env.ROUTER_URL ?? "http://127.0.0.1:4500"}`,
+  );
 }

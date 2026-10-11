@@ -15,8 +15,8 @@ achieve. No code changes until this brief is agreed.
 - Constraints (locked): static files served by the router itself
   (`public/index.html + styles.css + app.js`), **no build step, no CDN/runtime
   dependency** (dashboard must work on offline/LAN setups). Vanilla JS,
-  hash routing, token in localStorage, batched `/api/routes/counts`
-  (never N+1 `/api/routes`), one-shot 429 retry, 401 → token modal.
+  hash routing, batched `/api/routes/counts`
+  (never N+1 `/api/routes`), one-shot 429 retry.
 
 ## Design goal
 
@@ -96,7 +96,7 @@ Only options an operator of *this* router would use weekly. Nothing decorative.
 1. `node --check public/app.js`.
 2. Every `/api/*` path used exists in `src/server/routes/management.ts`.
 3. Screenshot all 6 pages + mobile width in headless Chromium against the
-   live server (admin token via localStorage injection) — one batched pass,
+   live server — one batched pass,
    fix, one confirmation pass. Then run the Impeccable detector:
    `scripts/impeccable detect --json <changed targets>`.
 4. No backend test changes expected (UI-only); `pnpm test` untouched.

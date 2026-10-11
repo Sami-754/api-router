@@ -45,44 +45,78 @@ export async function validateCredentialById(
     throw new Error("stored secret is undecryptable (wrong MASTER_KEY?)");
   }
   const result = await adapter.validateCredential(
-    { id: cred.id, accountId: cred.accountId, providerId: cred.providerId, secret },
-    { requestId: newId("validate"), baseUrl: provider?.baseUrl ?? undefined, timeoutMs, fetchImpl },
+    {
+      id: cred.id,
+      accountId: cred.accountId,
+      providerId: cred.providerId,
+      secret,
+    },
+    {
+      requestId: newId("validate"),
+      baseUrl: provider?.baseUrl ?? undefined,
+      timeoutMs,
+      fetchImpl,
+    },
   );
   store.markCredentialValidated(id, result.ok);
   return { ...result, status: store.getCredential(id)?.status };
 }
 
 /** Batch validation: round-robin over stale active credentials. */
-export async function runValidationJob(opts: ValidateJobOptions): Promise<ValidateJobSummary> {
+export async function runValidationJob(
+  opts: ValidateJobOptions,
+): Promise<ValidateJobSummary> {
   const {
-    store, registry, fetchImpl,
-    limit = 25, maxAgeHours = 24, staggerMs = 300, timeoutMs = 20_000,
+    store,
+    registry,
+    fetchImpl,
+    limit = 25,
+    maxAgeHours = 24,
+    staggerMs = 300,
+    timeoutMs = 20_000,
   } = opts;
   const cutoff = Date.now() - maxAgeHours * 3_600_000;
-  const all = opts.provider ? store.listCredentials().filter((c) => c.providerId === opts.provider) : store.listCredentials();
+  const all = opts.provider
+    ? store.listCredentials().filter((c) => c.providerId === opts.provider)
+    : store.listCredentials();
   const stale = all.filter((c) => {
     if (c.status !== "active") return false;
     if (!c.lastValidatedAt) return true;
     return Date.parse(c.lastValidatedAt) < cutoff;
   });
   const summary: ValidateJobSummary = {
-    checked: 0, ok: 0, invalid: 0,
-    skippedFresh: all.filter((c) => c.status === "active").length - stale.length,
+    checked: 0,
+    ok: 0,
+    invalid: 0,
+    skippedFresh:
+      all.filter((c) => c.status === "active").length - stale.length,
     errors: [],
   };
   for (const cred of stale.slice(0, limit)) {
     try {
-      const r = await validateCredentialById(store, registry, cred.id, fetchImpl, timeoutMs);
+      const r = await validateCredentialById(
+        store,
+        registry,
+        cred.id,
+        fetchImpl,
+        timeoutMs,
+      );
       summary.checked += 1;
       if (r.ok) summary.ok += 1;
       else {
         summary.invalid += 1;
-        summary.errors.push({ credential: cred.id, message: r.message ?? "invalid" });
+        summary.errors.push({
+          credential: cred.id,
+          message: r.message ?? "invalid",
+        });
       }
     } catch (e) {
       summary.checked += 1;
       summary.invalid += 1;
-      summary.errors.push({ credential: cred.id, message: e instanceof Error ? e.message : String(e) });
+      summary.errors.push({
+        credential: cred.id,
+        message: e instanceof Error ? e.message : String(e),
+      });
     }
     if (staggerMs > 0) await new Promise((r) => setTimeout(r, staggerMs));
   }

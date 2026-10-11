@@ -1,6 +1,69 @@
 # STATE.md
 
-## Current status
+## Current status (2026-10-11 — admin token removed)
+
+Owner asked to drop the admin-token auth entirely. Gone from everywhere:
+no `onRequest` auth hook, no `adminToken` in `AppDeps`/`AppConfig`
+(`src/server/app.ts`, `boot.ts`, `shared/config.ts`), no `ADMIN_TOKEN` in
+`.env`/`.env.example`, no token modal / shield button / localStorage token /
+`Authorization` header / 401 branch in `public/` dashboard, no
+`adminToken: ""` in tests. Management APIs are public on the local bind;
+AGENTS.md security rules now say so (loopback instead of tokens — do not
+reintroduce unless the owner asks for multi-user/exposed operation).
+Docs updated (`docs/api.md`, `README.md`, `docs/ui-redesign.md`).
+
+## Key rotation (2026-10-11)
+
+Wiped all 206 old credentials + 205 accounts (`DELETE FROM accounts`,
+FK cascades cleared quotas/health/usage; 5 request-log rows kept) and
+imported `freellmapi-keys (1).json`: 223 creds across 11 providers
+(agnes 15, cohere 22, google 38, groq 29, lan-ollama 1, mistral 35, nara 4,
+ollama 26, openrouter 15, requesty 24, xkiro 14; 1374 mappings, mostly
+discovered live). `anyapi`/`sealion`/`unorouter` (27 keys) skipped — unknown
+platforms, importer has no base URL for them. No DB backup kept per owner
+(the old export files remain in `~/Downloads` anyway).
+
+## Model sync: pull ALL models, badge free ones (2026-10-11)
+
+Supersedes strict free-only (owner: "pull all the model and show in UI").
+`syncProviderModels()` in `src/server/free-models.ts` runs every boot:
+live `/models` per provider → maps ALL chat models with `free:true/false`
+metadata, prunes models the provider dropped (churn-proof), falls back to
+`CURATED_MODELS` (groq/xkiro, edge-blocked here) on discovery failure, keeps
+existing mappings only when both fail. Orphaned canonicals cleaned, `web.*`
+untouched. Boot log: `[api-router] model sync: N mappings, M stale pruned`.
+Live now: 14 providers, ~1760 mappings (151 free — unorouter 93, openrouter
+16, anyapi 11, xkiro 27, nara 4), `GET /v1/models` full catalog. Dashboard
+Resources keeps the green Free pill + `free only` filter (now meaningful on
+the mixed list); importer shares `SKIP_MODEL_RE`/`CURATED_MODELS` from the
+new module. Tests rewritten for map-all/prune/curated-fallback — 76/76.
+
+## Resources: By provider view (2026-10-11)
+
+Resources list was canonical-only; owner wants model names per provider.
+New default `view=provider`: one batched `/api/providers` +
+`/api/provider-resources` fetch (no N+1), grouped provider panels with
+provider model names, canonical links, enabled state, model/free counts,
+search + capability + free-only filters (200 rows cap per provider).
+Canonical table one click away (`view=canonical`). No restart needed.
+
+## Provider swap (2026-10-11)
+
+Deleted keyless `cloudflare` / `huggingface` / `opencode` providers; added
+`anyapi` (`https://api.anyapi.ai/v1`), `sealion`
+(`https://api.sea-lion.ai/v1`, AI Singapore) and `unorouter`
+(`https://api.unorouter.com/v1`) — all OpenAI-compatible, Bearer, `/models`
+discovery, all discovered live (11 / 7 / 239 models). Now 14 providers /
+250 creds. Live E2E: `unorouter::deepseek-r1-distill-qwen-32b:free` → 200 on
+attempt 1. (One earlier probe at `absolutereality:free` hung upstream —
+obscure free models can stall; prefer mainstream IDs.)
+
+## Credential delete (2026-10-11)
+
+Keys were disable-only in the UI. Added `deleteCredential` to the `Store`
+interface + SQLite impl, `DELETE /api/credentials/:id` (404 on unknown,
+quotas/health/usage cascade), and a Delete button on each key row in
+Providers → detail (with confirm). Verified live (200 then 404).
 
 Project stage: **plug-and-play tools (2026-09-29)**
 
@@ -24,7 +87,7 @@ The running server must be restarted to pick this up (also runs
 
 Live on `http://127.0.0.1:4500` (PORT=4500 in `.env`, data in
 `./data/router.db`, 14 providers / 206 credentials / 1457 mappings).
-Dashboard at `/dashboard` (admin token = `ADMIN_TOKEN` in `.env`).
+Dashboard at `/dashboard` (no auth — local-first, bind to loopback).
 
 Last incident: dashboard resources page fired ~1300 `/api/routes` requests
 (one per row) and tripped the global rate limiter (224× HTTP 429, recovered
@@ -32,7 +95,59 @@ on its own). Fixed with batched `GET /api/routes/counts`, one-shot 429
 retry in the dashboard client, and global cap 300 → 1000/min. Lesson: list
 views must never N+1 the routes endpoint.
 
-## Dashboard rebuild (2026-09-29)
+## Audit (2026-10-10)
+
+Full TS audit in `AUDIT.md` — 11 findings with file:line, impact,
+fix order. Baseline green (tsc/eslint/70 tests). All findings
+fixed same day:
+
+- #1 double `recordFailure` on the non-stream path — direct call
+  removed from `execute()` catch; `noteAttemptFailure()` is the
+  single failure-recording path now.
+- #2 quota usage not scoped by `provider_resource_id` —
+  `incrementQuotaUsage`/`sumUsage` take optional
+  `providerResourceId` (scoped = global windows + that resource's
+  windows/events only); threaded from `accountUsage()`, stream
+  `finish()`, and `rateChecksFor()`.
+- #3 `validateBaseUrl` SSRF guard now enforced — `POST/PATCH
+  /api/providers` reject bad base URLs with 400, and
+  `import-keys.ts` validates custom base URLs (rejecting with a
+  warning instead of aborting the import).
+- #4 403 classification — quota/credit body sniff now runs before
+  the auth return, so credit-exhausting 403s classify as
+  `quota_exhausted` (429 + 5-min cooldown) instead of `auth`.
+- #5 failed stream attempts before the first chunk are now logged
+  (`${requestId}:attempt${n}`) via `logStreamAttemptFailure()`,
+  including the streaming-unsupported branch.
+- #6 stream `finish()` records the full metric set (requests,
+  input/output/total tokens) like `accountUsage()`.
+- #7 dead exports removed (`redactSecret`, `hasHardExhaustion`,
+  discarded `latencyMs`).
+- #8 `prettier --write` applied — `format:check` clean.
+- #9 token estimates consolidated in `src/shared/tokens.ts`
+  (`estimateTokensFromChars` + `estimateRequestTokens`).
+- #10 empty-entries guard in `import-keys.ts` cloudflare branch.
+- #11 N+1 in `candidates()` — prototype-acceptable, unchanged.
+
+Verified after fixes: `pnpm typecheck`, `pnpm lint`,
+`pnpm format:check` clean; 70/70 tests pass.
+
+## Dashboard rebuild (2026-10-11)
+
+`public/app.js` had a fatal template-literal syntax error (`node --check`
+failed) so the whole dashboard rendered blank ("Connecting..." forever, empty
+Overview — see screenshot report). Rebuilt `app.js` from scratch (same
+dependency-free vanilla-JS contract, same 6 pages + settings modal, same dark
+console identity): fixed the syntax crash, fixed a `P`-before-`R` TDZ crash,
+fixed wrong verbs (`POST /api/settings|providers|credentials|mappings` →
+`PATCH`), replaced the copy-button helper misused as the Overview card
+builder with real `.card` links, and cut Overview from 2 request-log fetches
+(12 + 500 rows) to one (`limit=120`). `index.html` gained a skip link +
+`tabindex` on the content region; `styles.css` gained the missing classes
+(`.subtitle`, `.card-link`, `.tab` reset, quota `.ok`, etc.). Verified:
+`node --check` clean, all 8 management endpoints 200 with live shapes,
+simulate + PATCH settings round-trip, 70/70 tests green. No restart needed
+(static files are read per request).
 
 Full static-UI rewrite, still dependency-free (`public/index.html +
 styles.css + app.js`, no build step — deliberately no CDN kit so the
@@ -67,8 +182,8 @@ redacted secrets. Live on `:4500` with no restart (static read per request).
   non-retryable errors never spray retries; `auth` marks credential `invalid`.
 - Health snapshots + cooldowns; generic quota windows with reset times;
   unknown quota stays eligible; usage + request logs with redacted secrets.
-- AES-256-GCM credential encryption (`MASTER_KEY`), timing-safe admin token,
-  1 MiB body limit, base-URL SSRF guards.
+- AES-256-GCM credential encryption (`MASTER_KEY`), 1 MiB body limit,
+  base-URL SSRF guards. No management auth (local-first; bind to loopback).
 - Management APIs: providers, accounts, credentials (redacted), resources,
   provider-resources, routes, `POST /api/routing/simulate`, quotas, requests.
 - Demo seed: `llm:model:nemotron-3-super-120b` → groq + openrouter mappings

@@ -17,18 +17,25 @@ describe("dashboard management APIs", () => {
     const get = await app.inject({ method: "GET", url: "/api/settings" });
     expect(get.json().data.defaultPolicy).toBe("auto");
     const patch = await app.inject({
-      method: "PATCH", url: "/api/settings", payload: { defaultPolicy: "burn" },
+      method: "PATCH",
+      url: "/api/settings",
+      payload: { defaultPolicy: "burn" },
     });
     expect(patch.json().data.defaultPolicy).toBe("burn");
     const bad = await app.inject({
-      method: "PATCH", url: "/api/settings", payload: { defaultPolicy: "nope" },
+      method: "PATCH",
+      url: "/api/settings",
+      payload: { defaultPolicy: "nope" },
     });
     expect(bad.statusCode).toBe(400);
   });
 
   it("credential validate probes upstream and marks status", async () => {
     const { app, store } = await createTestSetup();
-    const res = await app.inject({ method: "POST", url: "/api/credentials/cred-groq-1/validate" });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/credentials/cred-groq-1/validate",
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json().data.ok).toBe(true);
     expect(store.getCredential("cred-groq-1")?.status).toBe("active");
@@ -37,41 +44,68 @@ describe("dashboard management APIs", () => {
   it("quota create + delete round-trips", async () => {
     const { app } = await createTestSetup();
     const created = await app.inject({
-      method: "POST", url: "/api/quotas",
-      payload: { credentialId: "cred-groq-1", metric: "requests", limitValue: 10, windowKind: "calendar_day", resetAt: new Date(Date.now() + 86400000).toISOString() },
+      method: "POST",
+      url: "/api/quotas",
+      payload: {
+        credentialId: "cred-groq-1",
+        metric: "requests",
+        limitValue: 10,
+        windowKind: "calendar_day",
+        resetAt: new Date(Date.now() + 86400000).toISOString(),
+      },
     });
     expect(created.statusCode).toBe(201);
     const id = created.json().data.id as string;
-    const del = await app.inject({ method: "DELETE", url: `/api/quotas/${id}` });
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/quotas/${id}`,
+    });
     expect(del.statusCode).toBe(200);
   });
 
   it("mapping disable + delete", async () => {
     const { app, store } = await createTestSetup();
-    const before = store.listProviderResources("llm:model:nemotron-3-super-120b");
+    const before = store.listProviderResources(
+      "llm:model:nemotron-3-super-120b",
+    );
     expect(before.length).toBeGreaterThanOrEqual(2);
     const target = before[0];
     const patch = await app.inject({
-      method: "PATCH", url: `/api/provider-resources/${encodeURIComponent(target.id)}`, payload: { enabled: false },
+      method: "PATCH",
+      url: `/api/provider-resources/${encodeURIComponent(target.id)}`,
+      payload: { enabled: false },
     });
     expect(patch.json().data.enabled).toBe(false);
     // disabled mapping excludes its routes
     const chat = await app.inject({
-      method: "POST", url: "/v1/chat/completions",
-      payload: { model: "nemotron-3-super-120b", messages: [{ role: "user", content: "hi" }] },
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        model: "nemotron-3-super-120b",
+        messages: [{ role: "user", content: "hi" }],
+      },
     });
     expect(chat.statusCode).toBe(200);
-    const del = await app.inject({ method: "DELETE", url: `/api/provider-resources/${encodeURIComponent(target.id)}` });
+    const del = await app.inject({
+      method: "DELETE",
+      url: `/api/provider-resources/${encodeURIComponent(target.id)}`,
+    });
     expect(del.statusCode).toBe(200);
     expect(store.getProviderResource(target.id)).toBeUndefined();
   });
 
   it("account and provider deletes cascade", async () => {
     const { app, store } = await createTestSetup();
-    const delAcc = await app.inject({ method: "DELETE", url: "/api/accounts/groq-main" });
+    const delAcc = await app.inject({
+      method: "DELETE",
+      url: "/api/accounts/groq-main",
+    });
     expect(delAcc.statusCode).toBe(200);
     expect(store.getCredential("cred-groq-1")).toBeUndefined();
-    const delProv = await app.inject({ method: "DELETE", url: "/api/providers/openrouter" });
+    const delProv = await app.inject({
+      method: "DELETE",
+      url: "/api/providers/openrouter",
+    });
     expect(delProv.statusCode).toBe(200);
     expect(store.getProvider("openrouter")).toBeUndefined();
   });

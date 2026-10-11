@@ -1,66 +1,119 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="API Router — quota-aware multi-provider routing dashboard">
-<title>API Router</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23C6F135'/%3E%3Cpath d='M9 21 L16 7 L23 21 M12 16 H20' stroke='%23131600' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/dashboard/styles.css">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="API Router — quota-aware multi-provider routing dashboard">
+  <title>API Router</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%236366f1'/%3E%3Cpath d='M9 21 L16 7 L23 21 M12 16 H20' stroke='%23ffffff' stroke-width='2.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/dashboard/styles.css">
 </head>
 <body>
-<div id="tokenbar" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Admin token">
-  <div class="modal">
-    <h2>Admin token</h2>
-    <p class="muted">Management APIs require the <span class="mono">ADMIN_TOKEN</span> from <span class="mono">.env</span>. It stays in this browser's localStorage.</p>
-    <div class="row">
-      <input id="tokeninput" type="password" placeholder="paste ADMIN_TOKEN" autocomplete="off" spellcheck="false">
-      <button id="tokensave" class="primary">Save</button>
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-label="Settings">
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <h2>Settings</h2>
+        <button id="closeSettingsModal" class="icon-btn" aria-label="Close">×</button>
+      </div>
+      <div id="settingsBody" class="modal-body"></div>
     </div>
   </div>
-</div>
-<div id="settingswrap" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Settings">
-  <div class="modal wide">
-    <div class="modal-head">
-      <h2>Settings</h2>
-      <button id="settingsclose" class="iconbtn" aria-label="Close settings">✕</button>
-    </div>
-    <div id="settingsbody"></div>
+
+  <!-- Main Layout -->
+  <a class="skip-link" href="#pageContent">Skip to content</a>
+  <div class="app-layout">
+    <!-- Mobile Scrim -->
+    <div id="mobileScrim" class="scrim hidden"></div>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <div class="brand">
+          <div class="brand-icon">
+            <svg width="28" height="28" viewBox="0 0 32 32">
+              <rect width="32" height="32" rx="8" fill="#6366f1"/>
+              <path d="M9 21 L16 7 L23 21 M12 16 H20" stroke="#ffffff" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <span class="brand-name">API Router</span>
+            <span class="brand-tagline">Quota-aware · Multi-provider</span>
+          </div>
+        </div>
+      </div>
+
+      <nav class="sidebar-nav" aria-label="Primary">
+        <a href="#/overview" class="nav-item" data-page="overview">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/></svg>
+          <span>Overview</span>
+        </a>
+        <a href="#/playground" class="nav-item" data-page="playground">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z"/></svg>
+          <span>Playground</span>
+        </a>
+        <a href="#/resources" class="nav-item" data-page="resources">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>
+          <span>Resources</span>
+        </a>
+        <a href="#/providers" class="nav-item" data-page="providers">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.94-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+          <span>Providers & Keys</span>
+        </a>
+        <a href="#/quotas" class="nav-item" data-page="quotas">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
+          <span>Quotas & Usage</span>
+        </a>
+        <a href="#/requests" class="nav-item" data-page="requests">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z"/></svg>
+          <span>Requests</span>
+        </a>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="status-indicator">
+          <span id="sidebarStatusDot" class="status-dot"></span>
+          <span id="sidebarStatusText">Connecting...</span>
+        </div>
+        <div class="footer-actions">
+          <button id="openSettingsBtn" class="btn-icon" title="Settings">
+            <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="main-content">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button id="menuToggle" class="icon-btn" aria-label="Toggle sidebar">
+            <svg viewBox="0 0 24 24"><path d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+          </button>
+          <h1 id="pageTitle">Overview</h1>
+        </div>
+        <div class="topbar-right">
+          <div class="status-indicator">
+            <span id="topbarStatusDot" class="status-dot"></span>
+            <span id="topbarStatusText"></span>
+          </div>
+          <span id="policyBadge" class="badge badge-secondary"></span>
+          <button id="refreshBtn" class="icon-btn" title="Refresh">
+            <svg viewBox="0 0 24 24"><path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Page Content -->
+      <div id="pageContent" class="page-content" tabindex="-1"></div>
+    </main>
   </div>
-</div>
-<div class="layout">
-  <div id="scrim" class="scrim hidden"></div>
-  <nav class="side" id="sidebar" aria-label="Primary">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true"><svg width="26" height="26" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#C6F135"/><path d="M9 21 L16 7 L23 21 M12 16 H20" stroke="#131600" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-      <span class="brand-text">API Router<small>quota-aware · multi-provider</small></span>
-    </div>
-    <div class="statusline"><span id="healthdot" class="dot down"></span><span id="healthtext">connecting…</span></div>
-    <a href="#/overview"><svg viewBox="0 0 16 16"><rect x="1.5" y="1.5" width="5.5" height="5.5" rx="1.2"/><rect x="9" y="1.5" width="5.5" height="5.5" rx="1.2"/><rect x="1.5" y="9" width="5.5" height="5.5" rx="1.2"/><rect x="9" y="9" width="5.5" height="5.5" rx="1.2"/></svg>Overview</a>
-    <a href="#/playground"><svg viewBox="0 0 16 16"><path d="M2 3.5h12v7H8l-3.5 3v-3H2z"/></svg>Playground</a>
-    <a href="#/resources"><svg viewBox="0 0 16 16"><path d="M2 4.5h5.5v7H2z M9.5 4.5H14v7H9.5z"/></svg>Resources</a>
-    <a href="#/providers"><svg viewBox="0 0 16 16"><path d="M2 12.5c1.5-4 3.5-6 6-6s4.5 2 6 6M8 6.5a2 2 0 1 0 0-4 2 2 0 0 0 0 4z"/></svg>Providers &amp; Keys</a>
-    <a href="#/quotas"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M8 4.5V8l2.5 1.8"/></svg>Quotas &amp; Usage</a>
-    <a href="#/requests"><svg viewBox="0 0 16 16"><path d="M2.5 4h11M2.5 8h11M2.5 12h7"/></svg>Requests</a>
-    <div class="sidefoot">
-      <button id="settingsbtn" class="ghost">Settings</button>
-      <button id="tokenbtn" class="ghost">Admin token</button>
-    </div>
-  </nav>
-  <div class="content">
-    <header class="topbar">
-      <button id="menubtn" class="iconbtn" aria-label="Open navigation">☰</button>
-      <span class="topbar-title" id="pagetitle">Overview</span>
-      <span class="topbar-right">
-        <span id="policychip" class="pill dim" title="Runtime default routing policy"></span>
-        <button id="refreshbtn" class="iconbtn" title="Refresh current view" style="padding:4px 8px;font-size:14px">↻</button>
-        <span id="healthdot2" class="dot down"></span><span id="healthtext2" class="muted"></span>
-      </span>
-    </header>
-    <main id="main"></main>
-  </div>
-</div>
-<div id="toast" class="toast hidden" role="status"></div>
-<script src="/dashboard/app.js"></script>
+
+  <!-- Toast Notification -->
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script src="/dashboard/app.js"></script>
 </body>
 </html>

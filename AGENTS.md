@@ -548,11 +548,12 @@ Never expose secrets.
 - Keep credential IDs separate from secret values.
 - Do not return provider secrets through management APIs.
 - Avoid putting API keys in URLs.
-- Use timing-safe token comparison where appropriate.
 - Add request size limits.
 - Validate user-supplied custom base URLs.
 - Protect against SSRF if arbitrary/custom endpoints are supported.
-- Default management APIs to authenticated local/admin access.
+- Management APIs have no auth (local-first single-user service) — bind to
+  loopback / trust the local network instead. Do not reintroduce token auth
+  unless the owner asks for multi-user or internet-exposed operation.
 - Keep inference/API-client keys separate from upstream provider credentials.
 
 ---

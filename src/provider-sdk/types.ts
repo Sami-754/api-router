@@ -26,7 +26,11 @@ export interface NormalizedChatResponse {
     message: { role: string; content: string };
     finishReason: string | null;
   }>;
-  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
   raw?: unknown;
 }
 
@@ -42,7 +46,12 @@ export interface NormalizedSearchRequest {
 }
 
 export interface NormalizedSearchResponse {
-  results: Array<{ title: string; url: string; snippet: string; score?: number }>;
+  results: Array<{
+    title: string;
+    url: string;
+    snippet: string;
+    score?: number;
+  }>;
   raw?: unknown;
 }
 
@@ -68,7 +77,12 @@ export interface NormalizedExtractRequest {
 }
 
 export interface NormalizedExtractResponse {
-  results: Array<{ url: string; content: string; title?: string; error?: string }>;
+  results: Array<{
+    url: string;
+    content: string;
+    title?: string;
+    error?: string;
+  }>;
   raw?: unknown;
 }
 
@@ -205,7 +219,11 @@ export interface ProviderAdapter {
 export interface StreamChunk {
   delta: string;
   finishReason?: string | null;
-  usage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
 }
 
 /** Route enriched with decrypted credential for execution. Secret stays in memory only. */

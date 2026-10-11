@@ -1,237 +1,1916 @@
+/**
+ * API Router Dashboard — rebuilt UI.
+ * Vanilla JS, zero dependencies, no build step (works offline / on LAN).
+ * Pages: Overview, Playground, Resources, Providers & Keys, Quotas & Usage,
+ * Requests. Settings lives in a modal.
+ */
+
 "use strict";
-/* API Router dashboard — vanilla JS, no build step. All state via /api/*. */
 
-const main = document.getElementById("main");
-const toastEl = document.getElementById("toast");
-const pageTitle = document.getElementById("pagetitle");
+/* ============================================================
+   Config
+   ============================================================ */
 
-const CAPABILITIES = [
-  "llm.chat", "llm.responses", "llm.tools", "llm.vision", "llm.embeddings",
-  "web.search", "web.extract", "web.scrape", "web.crawl", "web.map",
-];
-const POLICIES = ["auto", "burn", "preserve", "fast", "reliable", "cheap", "priority"];
-const TOOL_CAPS = ["search", "scrape", "extract", "crawl", "map"];
+const CFG = {
+  CAPS: [
+    "llm.chat",
+    "llm.responses",
+    "llm.tools",
+    "llm.vision",
+    "llm.embeddings",
+    "web.search",
+    "web.extract",
+    "web.scrape",
+    "web.crawl",
+    "web.map",
+  ],
+  POLICIES: ["auto", "burn", "preserve", "fast", "reliable", "cheap", "priority"],
+  TOOLS: ["search", "scrape", "extract", "crawl", "map"],
+  TITLES: {
+    "/overview": "Overview",
+    "/playground": "Playground",
+    "/resources": "Resources",
+    "/providers": "Providers & Keys",
+    "/quotas": "Quotas & Usage",
+    "/requests": "Requests",
+  },
+};
 
-/* ---------------- utils ---------------- */
+/* ============================================================
+   DOM refs + session state
+   ============================================================ */
+
+const D = {
+  pc: document.getElementById("pageContent"),
+  pt: document.getElementById("pageTitle"),
+  sd: document.getElementById("sidebarStatusDot"),
+  st: document.getElementById("sidebarStatusText"),
+  td: document.getElementById("topbarStatusDot"),
+  tt: document.getElementById("topbarStatusText"),
+  pb: document.getElementById("policyBadge"),
+  sm: document.getElementById("settingsModal"),
+  sb: document.getElementById("settingsBody"),
+  sc: document.getElementById("closeSettingsModal"),
+  sbn: document.getElementById("sidebar"),
+  ms: document.getElementById("mobileScrim"),
+  mt: document.getElementById("menuToggle"),
+  rb: document.getElementById("refreshBtn"),
+  os: document.getElementById("openSettingsBtn"),
+  toast: document.getElementById("toast"),
+};
+
+const S = {
+  policy: "",
+};
+
+/* ============================================================
+   Utilities (all user content goes through esc)
+   ============================================================ */
+
 function esc(s) {
-  return String(s ?? "").replace(/[&<>"']/g, (c) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[c]));
-}
-function showToast(msg, ms = 3500) {
-  toastEl.textContent = msg;
-  toastEl.classList.remove("hidden");
-  clearTimeout(showToast._t);
-  showToast._t = setTimeout(() => toastEl.classList.add("hidden"), ms);
-}
-const getToken = () => localStorage.getItem("router-admin-token") || "";
-const setToken = (t) => localStorage.setItem("router-admin-token", t);
-
-function openOverlay(id) { document.getElementById(id).classList.remove("hidden"); }
-function closeOverlay(id) { document.getElementById(id).classList.add("hidden"); }
-
-/** Management API client: Bearer token, token modal on 401, one 429 backoff retry. */
-async function api(method, path, body, retry = true) {
-  const headers = {};
-  if (body !== undefined) headers["Content-Type"] = "application/json";
-  const t = getToken();
-  if (t) headers["Authorization"] = "Bearer " + t;
-  const res = await fetch(path, {
-    method, headers, body: body !== undefined ? JSON.stringify(body) : undefined,
+  return String(s ?? "").replace(/[&<>"']/g, (c) => {
+    return {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[c];
   });
-  if (res.status === 401) {
-    openOverlay("tokenbar");
-    throw new Error("unauthorized — set the admin token");
-  }
-  if (res.status === 429 && retry) {
-    const waitMs = Math.min(15000, (Number(res.headers.get("retry-after")) || 5) * 1000);
-    await new Promise((r) => setTimeout(r, waitMs));
-    return api(method, path, body, false);
-  }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
-  return data.data;
 }
 
-/* ---------------- shared components ---------------- */
-function pill(text, kind) {
-  return `<span class="pill ${kind || "dim"}">${esc(text)}</span>`;
-}
-function statusPill(s) {
-  if (s === "success" || s === "active" || s === "enabled" || s === "healthy") return pill(s, "ok");
-  if (s === "invalid" || s === "error" || s === "failed") return pill(s, "bad");
-  if (s === "disabled" || s === "cooldown" || s === "degraded") return pill(s, "warn");
-  return pill(s ?? "—", "dim");
-}
-function shortRes(id) { return String(id || "").replace(/^llm:model:/, ""); }
 function fmtTime(iso) {
   if (!iso) return "—";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? esc(iso) : d.toISOString().slice(5, 19).replace("T", " ");
+  if (Number.isNaN(d.getTime())) return esc(iso);
+  return d.toISOString().slice(5, 19).replace("T", " ");
 }
-function countdown(iso) {
-  if (!iso) return "<span class='muted'>no reset</span>";
+
+function fmtAgo(iso) {
+  if (!iso) return "—";
+  const ms = Date.now() - Date.parse(iso);
+  if (Number.isNaN(ms)) return esc(iso);
+  if (ms < 0) return fmtTime(iso);
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return s + "s ago";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + "h ago";
+  return Math.floor(h / 24) + "d ago";
+}
+
+function fmtCountdown(iso) {
+  if (!iso) return '<span class="text-muted">no reset</span>';
   const ms = Date.parse(iso) - Date.now();
   if (Number.isNaN(ms)) return esc(iso);
-  if (ms <= 0) return "<span class='muted'>resetting…</span>";
-  const d = Math.floor(ms / 86400000), h = Math.floor(ms % 86400000 / 3600000), m = Math.floor(ms % 3600000 / 60000);
-  return esc(d > 0 ? `${d}d ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`);
+  if (ms <= 0) return '<span class="text-muted">resetting…</span>';
+  const d = Math.floor(ms / 86400000);
+  const h = Math.floor((ms % 86400000) / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (d > 0) return esc(d + "d " + h + "h");
+  if (h > 0) return esc(h + "h " + m + "m");
+  return esc(m + "m");
 }
-function quotaFrac(q) {
-  if (!q || q.limitValue <= 0) return null;
-  const rem = q.remainingValue ?? Math.max(0, q.limitValue - q.usedValue);
-  return Math.max(0, Math.min(100, Math.round((100 * rem) / q.limitValue)));
+
+function shortResource(id) {
+  return String(id ?? "").replace(/^llm:model:/, "");
 }
+
+function isFreeId(id) {
+  return /free/i.test(String(id || ""));
+}
+
+function quotaPct(q) {
+  if (!q || !(q.limitValue > 0)) return null;
+  const remaining =
+    q.remainingValue ?? Math.max(0, q.limitValue - (q.usedValue || 0));
+  return Math.max(0, Math.min(100, Math.round((100 * remaining) / q.limitValue)));
+}
+
+function fmtNum(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) return "—";
+  return v.toLocaleString();
+}
+
+/* ============================================================
+   Toast + modal + API client
+   ============================================================ */
+
+const Toast = {
+  timer: 0,
+  show(msg, kind, ms) {
+    D.toast.textContent = msg;
+    D.toast.className = "toast" + (kind ? " " + kind : "");
+    D.toast.classList.remove("hidden");
+    clearTimeout(this.timer);
+    this.timer = setTimeout(() => D.toast.classList.add("hidden"), ms || 3500);
+  },
+  ok(msg, ms) {
+    this.show(msg, "success", ms);
+  },
+  err(msg, ms) {
+    this.show(msg, "error", ms || 5000);
+  },
+};
+
+function openModal(id) {
+  document.getElementById(id).classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.add("hidden");
+  document.body.style.overflow = "";
+}
+
+const Api = {
+  async req(method, path, body, retried) {
+    const headers = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const res = await fetch(path, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    if (res.status === 429 && !retried) {
+      const waitMs = Math.min(
+        15000,
+        (Number(res.headers.get("retry-after")) || 5) * 1000,
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+      return this.req(method, path, body, true);
+    }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error?.message || "HTTP " + res.status);
+    return data.data;
+  },
+  get(p) {
+    return this.req("GET", p);
+  },
+  post(p, b) {
+    return this.req("POST", p, b);
+  },
+  patch(p, b) {
+    return this.req("PATCH", p, b);
+  },
+  del(p) {
+    return this.req("DELETE", p);
+  },
+};
+
+/* ============================================================
+   Health pill
+   ============================================================ */
+
+const Health = {
+  async check() {
+    try {
+      await fetch("/healthz");
+      let policy = "";
+      try {
+        const s = await Api.get("/api/settings");
+        policy = s.defaultPolicy || "";
+        S.policy = policy;
+      } catch {
+        /* settings fetch may fail; health itself is still fine */
+      }
+      this.set(true, "online" + (policy ? " · " + policy : ""));
+      return true;
+    } catch {
+      this.set(false, "offline");
+      return false;
+    }
+  },
+  set(ok, text) {
+    const cls = ok ? "" : "down";
+    if (D.sd) D.sd.className = "status-dot " + cls;
+    if (D.st) D.st.textContent = text;
+    if (D.td) D.td.className = "status-dot " + cls;
+    if (D.tt) D.tt.textContent = text;
+    if (D.pb && S.policy) {
+      D.pb.textContent = "Policy: " + S.policy;
+      D.pb.className = "badge badge-primary";
+    }
+  },
+};
+
+/* ============================================================
+   Shared components (return HTML strings; callers esc inputs)
+   ============================================================ */
+
+function pill(text, kind) {
+  const map = {
+    success: "ok",
+    active: "ok",
+    enabled: "ok",
+    healthy: "ok",
+    on: "ok",
+    valid: "ok",
+    invalid: "bad",
+    error: "bad",
+    failed: "bad",
+    disabled: "warn",
+    off: "warn",
+    cooldown: "warn",
+    degraded: "warn",
+  };
+  const cls = map[kind || ""] || kind || "dim";
+  return '<span class="status-pill ' + cls + '">' + esc(text) + "</span>";
+}
+
+function badge(text, kind) {
+  return (
+    '<span class="badge badge-' +
+    (kind || "secondary") +
+    '">' +
+    esc(text) +
+    "</span>"
+  );
+}
+
 function quotaBar(q) {
-  if (!q) return "<span class='muted'>unknown</span>";
-  const p = quotaFrac(q);
-  if (p === null) return "<span class='muted'>—</span>";
-  const cls = p < 10 ? "crit" : p < 25 ? "low" : "";
-  return `<span class="bar ${cls}" title="${esc(q.usedValue)}/${esc(q.limitValue)} ${esc(q.metric)}"><i style="width:${p}%"></i></span> <span class="muted">${p}%</span>`;
+  if (!q) return '<span class="text-muted">unknown</span>';
+  const p = quotaPct(q);
+  if (p === null) return '<span class="text-muted">—</span>';
+  const cls = p < 10 ? "crit" : p < 25 ? "low" : "ok";
+  return (
+    '<span class="quota-bar"><span class="bar ' +
+    cls +
+    '" title="' +
+    esc(q.usedValue) +
+    "/" +
+    esc(q.limitValue) +
+    " " +
+    esc(q.metric) +
+    '"><i style="width:' +
+    p +
+    '%"></i></span> <span class="text-muted">' +
+    p +
+    "%</span></span>"
+  );
 }
-function healthCell(h) {
-  if (!h) return "<span class='muted'>—</span>";
-  const cd = h.cooldownUntil && Date.parse(h.cooldownUntil) > Date.now();
-  if (cd) return pill("cooldown" + (h.lastErrorClass ? " · " + h.lastErrorClass : ""), "bad");
+
+function healthBadge(h) {
+  if (!h) return '<span class="text-muted">—</span>';
+  if (h.cooldownUntil && Date.parse(h.cooldownUntil) > Date.now()) {
+    return pill(
+      "cooldown" + (h.lastErrorClass ? " · " + h.lastErrorClass : ""),
+      "bad",
+    );
+  }
   if (h.consecutiveFailures) return pill(h.consecutiveFailures + " fails", "warn");
   return pill("healthy", "ok");
 }
-function table(headers, rows, emptyMsg = "Nothing here yet.") {
-  if (!rows.length) return `<div class="empty">${esc(emptyMsg)}</div>`;
-  return `<div class="table-scroll"><table><thead><tr>${headers.map((h) => `<th>${esc(h)}</th>`).join("")}</tr></thead><tbody>${rows.join("")}</tbody></table></div>`;
-}
-function reqRows(logs) {
-  return logs.map((l) => `<tr>
-    <td class="mono">${esc(fmtTime(l.createdAt))}</td>
-    <td><a class="mono" href="#/requests?id=${encodeURIComponent(l.id)}">${esc(shortRes(l.requestedResourceId) || l.capability || "")}</a></td>
-    <td class="mono">${l.selectedProviderId ? esc(l.selectedProviderId + "/" + (l.selectedUpstreamId || "")) : "<span class='muted'>—</span>"}</td>
-    <td>${esc(l.policy || "")}</td><td>${statusPill(l.status)}</td>
-    <td class="num">${l.attempts ?? "—"}</td>
-    <td class="num">${l.totalTokens ?? "—"}</td></tr>`).join("");
-}
-function reqTable(logs, emptyMsg) {
-  if (!logs.length) return `<div class="empty">${esc(emptyMsg || "No requests yet — send one from the Playground.")}</div>`;
-  return table(["time", "resource", "route", "policy", "status", "att", "tokens"], [reqRows(logs)]);
-}
-function keyRows(creds) {
-  return creds.map((c) => `<tr>
-    <td class="mono">${esc(c.id)}<button class="copybtn" data-copy="${esc(c.id)}" title="Copy credential ID">copy</button></td>
-    <td>${esc(c.label || "")}</td>
-    <td>${statusPill(c.status)}</td>
-    <td class="mono">${c.lastValidatedAt ? esc(fmtTime(c.lastValidatedAt)) : "—"}</td>
-    <td><div class="row" style="margin:0">
-      <button class="small ghost" data-validate-cred="${esc(c.id)}">Validate</button>
-      ${c.status === "active"
-        ? `<button class="small ghost" data-cred-status="${esc(c.id)}" data-to="disabled">Disable</button>`
-        : `<button class="small ghost" data-cred-status="${esc(c.id)}" data-to="active">Enable</button>`}
-    </div></td></tr>`).join("");
-}
-function policyOptions(sel) {
-  return POLICIES.map((p) => `<option value="${p}"${p === sel ? " selected" : ""}>${p}</option>`).join("");
+
+function emptyState(msg) {
+  return '<div class="empty-state"><p>' + esc(msg) + "</p></div>";
 }
 
-/* ---------------- shell ---------------- */
-function setHealth(online, text) {
-  for (const id of ["healthdot", "healthdot2"]) {
-    const d = document.getElementById(id);
-    if (d) d.classList.toggle("down", !online);
-  }
-  for (const id of ["healthtext", "healthtext2"]) {
-    const t = document.getElementById(id);
-    if (t) t.textContent = text;
-  }
-}
-async function loadStatus() {
-  try {
-    await fetch("/healthz");
-    let pol = "";
-    try {
-      const s = await api("GET", "/api/settings");
-      pol = s.defaultPolicy || "";
-      const chip = document.getElementById("policychip");
-      if (chip) chip.textContent = pol ? "policy: " + pol : "";
-    } catch { /* token not set yet */ }
-    setHealth(true, "online" + (pol ? " · " + pol : ""));
-  } catch {
-    setHealth(false, "offline");
-  }
+function skeleton() {
+  return (
+    "<h1>&nbsp;</h1>" +
+    '<div class="skeleton skeleton-title"></div>' +
+    '<div class="skeleton skeleton-text" style="width:80%"></div>' +
+    '<div class="skeleton skeleton-text" style="width:60%"></div>' +
+    '<div class="skeleton skeleton-text" style="width:70%"></div>'
+  );
 }
 
-document.getElementById("tokensave").onclick = () => {
-  setToken(document.getElementById("tokeninput").value.trim());
-  closeOverlay("tokenbar");
-  showToast("Token saved. Reloading…");
-  setTimeout(() => location.reload(), 400);
-};
-document.getElementById("tokenbtn").onclick = () => {
-  openOverlay("tokenbar");
-  document.getElementById("tokeninput").value = getToken();
-};
-document.getElementById("tokenbar").addEventListener("click", (e) => {
-  if (e.target.id === "tokenbar") closeOverlay("tokenbar");
-});
-document.getElementById("settingsbtn").onclick = () => { openSettings(); };
-document.getElementById("settingsclose").onclick = () => closeOverlay("settingswrap");
-document.getElementById("settingswrap").addEventListener("click", (e) => {
-  if (e.target.id === "settingswrap") closeOverlay("settingswrap");
-});
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeOverlay("tokenbar"); closeOverlay("settingswrap"); }
-});
-document.getElementById("menubtn").onclick = () => {
-  const open = document.body.classList.toggle("nav-open");
-  document.getElementById("scrim").classList.toggle("hidden", !open);
-};
-document.getElementById("scrim").onclick = () => {
-  document.body.classList.remove("nav-open");
-  document.getElementById("scrim").classList.add("hidden");
-};
-document.addEventListener("click", (e) => {
-  const cp = e.target.closest("[data-copy]");
-  if (cp) {
-    navigator.clipboard?.writeText(cp.getAttribute("data-copy")).then(
-      () => showToast("Copied to clipboard"),
-      () => showToast("Copy failed"),
+function copyBtn(value, label) {
+  return (
+    '<button class="copy-btn" data-copy="' +
+    esc(value) +
+    '" title="Copy">' +
+    esc(label || "copy") +
+    "</button>"
+  );
+}
+
+function policyOptions(selected) {
+  return CFG.POLICIES.map((p) => {
+    return (
+      '<option value="' + p + '"' + (p === selected ? " selected" : "") + ">" + p + "</option>"
     );
-    return;
-  }
-  const vs = e.target.closest("[data-cred-status]");
-  if (vs) {
-    api("PATCH", `/api/credentials/${encodeURIComponent(vs.getAttribute("data-cred-status"))}`, { status: vs.getAttribute("data-to") })
-      .then(() => { showToast("Credential " + vs.getAttribute("data-to")); router(); })
-      .catch((err) => showToast("Failed: " + err.message));
-    return;
-  }
-  const ot = e.target.closest("[data-open-token]");
-  if (ot) {
-    openOverlay("tokenbar");
-    const inp = document.getElementById("tokeninput");
-    if (inp) {
-      inp.value = getToken();
-      inp.focus();
-    }
-    return;
-  }
-  const vv = e.target.closest("[data-validate-cred]");
-  if (vv) {
-    const id = vv.getAttribute("data-validate-cred");
-    showToast("Probing upstream…");
-    api("POST", `/api/credentials/${encodeURIComponent(id)}/validate`)
-      .then((r) => showToast(r.ok ? `Valid — ${r.message || "upstream accepted the key"}` : `Invalid — ${r.message || "upstream rejected the key"}`))
-      .catch((err) => showToast("Validate failed: " + err.message))
-      .finally(() => router());
-  }
-});
+  }).join("");
+}
 
-/* ---------------- router ---------------- */
-const TITLES = {
-  "/overview": "Overview",
-  "/playground": "Playground",
-  "/resources": "Resources",
-  "/providers": "Providers & Keys",
-  "/quotas": "Quotas & Usage",
-  "/requests": "Requests",
-};
+function requestRows(logs) {
+  return logs
+    .map((x) => {
+      const name = esc(shortResource(x.requestedResourceId) || x.capability || "");
+      const route = x.selectedProviderId
+        ? esc(x.selectedProviderId + "/" + (x.selectedUpstreamId || ""))
+        : "—";
+      return (
+        "<tr>" +
+        '<td class="cell-muted">' +
+        esc(fmtAgo(x.createdAt)) +
+        "</td>" +
+        '<td><a class="mono" href="#/requests?id=' +
+        encodeURIComponent(x.id) +
+        '">' +
+        name +
+        "</a></td>" +
+        '<td class="cell-mono cell-muted">' +
+        route +
+        "</td>" +
+        '<td class="cell-mono" title="' +
+        esc(x.selectedCredentialId || "") +
+        '">' +
+        (x.selectedCredentialId ? esc(x.selectedCredentialId) : "—") +
+        "</td>" +
+        "<td>" +
+        esc(x.policy || "") +
+        "</td>" +
+        "<td>" +
+        pill(x.status, x.status) +
+        "</td>" +
+        '<td class="cell-numeric">' +
+        (x.attempts ?? "—") +
+        "</td>" +
+        '<td class="cell-numeric">' +
+        (x.totalTokens ?? "—") +
+        "</td>" +
+        "</tr>"
+      );
+    })
+    .join("");
+}
+
+function requestTable(logs, emptyMsg) {
+  if (!logs.length) return emptyState(emptyMsg || "No requests yet.");
+  return (
+    '<div class="table-container"><table class="table"><thead><tr>' +
+    "<th>Time</th><th>Resource</th><th>Route</th><th>API key</th><th>Policy</th>" +
+    "<th>Status</th><th>Attempts</th><th>Tokens</th>" +
+    "</tr></thead><tbody>" +
+    requestRows(logs) +
+    "</tbody></table></div>"
+  );
+}
+
+/* ============================================================
+   Pages (defined before the router — no TDZ)
+   ============================================================ */
+
+async function renderOverview() {
+  const [o, recent] = await Promise.all([
+    Api.get("/api/overview"),
+    Api.get("/api/requests?limit=120"),
+  ]);
+  const buckets = new Array(24).fill(0);
+  const errors = new Array(24).fill(0);
+  const now = Date.now();
+  recent.forEach((l) => {
+    const h = Math.floor((now - Date.parse(l.createdAt)) / 3600000);
+    if (h >= 0 && h < 24) {
+      buckets[23 - h] += 1;
+      if (l.status !== "success") errors[23 - h] += 1;
+    }
+  });
+  const max = Math.max(1, ...buckets);
+  const st = o.credentialsByStatus || { active: 0, disabled: 0, invalid: 0 };
+  const okRate =
+    o.successRate24h != null ? Math.round(o.successRate24h * 100) + "% ok" : "—";
+
+  const cards = [
+    {
+      href: "#/providers",
+      value: esc(o.providers),
+      label: "Providers",
+      trend: esc(o.providersEnabled) + " enabled",
+    },
+    { href: "#/providers", value: esc(o.accounts), label: "Accounts", trend: "" },
+    {
+      href: "#/providers",
+      value: esc(o.credentials),
+      label: "Credentials",
+      trend:
+        '<span class="status-pill ok">● ' +
+        st.active +
+        '</span> <span class="status-pill warn">● ' +
+        st.disabled +
+        '</span> <span class="status-pill bad">● ' +
+        st.invalid +
+        "</span>",
+      raw: true,
+    },
+    {
+      href: "#/resources",
+      value: esc(o.resources),
+      label: "Canonical Resources",
+      trend: "",
+    },
+    {
+      href: "#/resources",
+      value: esc(o.mappings),
+      label: "Provider Mappings",
+      trend: "",
+    },
+    {
+      href: "#/requests",
+      value: esc(o.requests24h),
+      label: "Requests / 24h",
+      trend: esc(okRate),
+    },
+    {
+      href: "#/quotas",
+      value: esc(fmtNum(o.tokens24h)),
+      label: "Tokens / 24h",
+      trend: "",
+      small: true,
+    },
+  ];
+
+  const bars = buckets
+    .map((b, i) => {
+      const h = Math.max(3, Math.round((100 * b) / max));
+      const cls = errors[i] && b ? "danger" : "success";
+      return (
+        '<div class="histogram-bar ' +
+        cls +
+        '" style="height:' +
+        h +
+        '%" title="' +
+        b +
+        " requests, " +
+        errors[i] +
+        ' failed"></div>'
+      );
+    })
+    .join("");
+
+  D.pc.innerHTML =
+    '<div class="section"><h1>Overview</h1>' +
+    '<p class="subtitle">Live state of the router.</p>' +
+    '<div class="cards">' +
+    cards
+      .map((c) => {
+        return (
+          '<a class="card card-link" href="' +
+          c.href +
+          '"><div class="card-value' +
+          (c.small ? " small" : "") +
+          '">' +
+          c.value +
+          '</div><div class="card-label">' +
+          c.label +
+          "</div>" +
+          (c.trend ? '<div class="card-trend">' + c.trend + "</div>" : "") +
+          "</a>"
+        );
+      })
+      .join("") +
+    "</div></div>" +
+    '<div class="section"><h2 class="section-title">Requests — last 24h</h2>' +
+    '<div class="histogram">' +
+    bars +
+    "</div></div>" +
+    '<div class="section"><h2 class="section-title">Recent requests</h2>' +
+    requestTable(recent.slice(0, 12)) +
+    "</div>";
+}
+
+/* ---------- Playground ---------- */
+
+async function renderPlayground(q) {
+  const settings = await Api.get("/api/settings").catch(() => ({
+    defaultPolicy: "auto",
+  }));
+  const tab = CFG.TOOLS.includes(q.get("tab")) ? q.get("tab") : "chat";
+  const tabs = ["chat"].concat(CFG.TOOLS).map((c) => {
+    return (
+      '<button data-tab="' +
+      c +
+      '" class="tab' +
+      (tab === c ? " active" : "") +
+      '">' +
+      c +
+      "</button>"
+    );
+  });
+  D.pc.innerHTML =
+    '<div class="section"><h1>Playground</h1>' +
+    '<p class="subtitle">Send real requests through the routing core.</p>' +
+    '<div class="tabs">' +
+    tabs.join("") +
+    '</div><div id="tabBody"></div></div>';
+  D.pc.querySelectorAll("[data-tab]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const name = b.getAttribute("data-tab");
+      location.hash =
+        name === "chat" ? "#/playground" : "#/playground?tab=" + name;
+    });
+  });
+  if (tab === "chat") renderChatTab(settings.defaultPolicy);
+  else renderToolTab(tab);
+}
+
+function renderChatTab(defaultPolicy) {
+  const el = document.getElementById("tabBody");
+  el.innerHTML =
+    '<form id="chatForm" class="panel">' +
+    '<div class="field-group"><label for="chatModel">Model</label>' +
+    '<input id="chatModel" name="model" required value="deepseek-r1-distill-qwen-32b:free"></div>' +
+    '<div class="grid grid-2 chat-opts">' +
+    '<div class="field-group"><label for="chatProvider">Provider pin</label>' +
+    '<input id="chatProvider" name="provider" placeholder="groq"></div>' +
+    '<div class="field-group"><label for="chatPolicy">Policy</label>' +
+    '<select id="chatPolicy" name="policy"><option value="">(default)</option>' +
+    policyOptions("") +
+    "</select></div></div>" +
+    '<div class="field-group check-row"><label><input type="checkbox" name="stream"> Stream (SSE)</label></div>' +
+    '<div class="field-group"><label for="chatMsg">Message</label>' +
+    '<textarea id="chatMsg" name="message" rows="3">Reply with exactly: router alive</textarea></div>' +
+    '<div class="form-actions"><button type="submit" class="btn btn-primary">Send</button></div>' +
+    '<p class="text-muted">default policy: ' +
+    esc(defaultPolicy || "auto") +
+    "</p></form>" +
+    '<div id="chatOut" class="playout"></div>';
+  document
+    .getElementById("chatForm")
+    .addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      const out = document.getElementById("chatOut");
+      const t0 = Date.now();
+      const payload = {
+        model: String(f.get("model")),
+        messages: [{ role: "user", content: String(f.get("message")) }],
+        max_tokens: 300,
+      };
+      const routing = {};
+      if (f.get("provider")) routing.provider = String(f.get("provider"));
+      if (f.get("policy")) routing.policy = String(f.get("policy"));
+      if (Object.keys(routing).length) payload.routing = routing;
+      if (f.get("stream")) {
+        streamChat(payload, out, t0);
+        return;
+      }
+      out.innerHTML = "<p class='text-muted'>Sending…</p>";
+      try {
+        const res = await fetch("/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const json = await res.json();
+        if (!res.ok)
+          throw new Error(json?.error?.message || "HTTP " + res.status);
+        const content =
+          json.choices?.[0]?.message?.content ?? JSON.stringify(json, null, 2);
+        out.innerHTML =
+          "<p>" +
+          badge("via " + res.headers.get("x-router-via"), "success") +
+          " " +
+          badge(
+            "policy " + res.headers.get("x-router-policy"),
+            "secondary",
+          ) +
+          " " +
+          badge(
+            res.headers.get("x-router-attempts") + " attempt(s)",
+            "secondary",
+          ) +
+          " " +
+          badge(Date.now() - t0 + "ms", "secondary") +
+          "</p>" +
+          '<pre class="dump">' +
+          esc(content) +
+          "</pre>" +
+          '<p class="text-muted mono">usage: ' +
+          esc(JSON.stringify(json.usage || {})) +
+          "</p>";
+      } catch (err) {
+        out.innerHTML =
+          "<p>" + pill("failed", "bad") + " " + esc(err.message) + "</p>";
+      }
+    });
+}
+
+async function streamChat(payload, out, t0) {
+  payload.stream = true;
+  out.innerHTML =
+    '<div class="stream-output" id="live"></div><p class="text-muted" id="liveMeta">connecting…</p>';
+  const live = document.getElementById("live");
+  const meta = document.getElementById("liveMeta");
+  try {
+    const res = await fetch("/v1/chat/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok || !res.body) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(j?.error?.message || "HTTP " + res.status);
+    }
+    const via = res.headers.get("x-router-via");
+    const attempts = res.headers.get("x-router-attempts");
+    meta.textContent =
+      "via " + via + " · " + attempts + " attempt(s) · streaming…";
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    let text = "";
+    for (;;) {
+      const part = await reader.read();
+      if (part.done) break;
+      buf += dec.decode(part.value, { stream: true });
+      const frames = buf.split("\n\n");
+      buf = frames.pop() || "";
+      for (const frame of frames) {
+        for (const line of frame.split("\n")) {
+          const t = line.trim();
+          if (!t.startsWith("data:")) continue;
+          const chunk = t.slice(5).trim();
+          if (chunk === "[DONE]") continue;
+          try {
+            const j = JSON.parse(chunk);
+            const d = j.choices?.[0]?.delta?.content || "";
+            if (d) {
+              text += d;
+              live.textContent = text;
+            }
+          } catch {
+            /* partial frame */
+          }
+        }
+      }
+    }
+    meta.textContent =
+      "via " + via + " · " + attempts + " attempt(s) · done in " + (Date.now() - t0) + "ms";
+  } catch (err) {
+    meta.textContent = "failed: " + err.message;
+  }
+}
+
+function toolFields(cap) {
+  if (cap === "search") {
+    return (
+      '<div class="grid grid-2 chat-opts"><div class="field-group"><label>Query</label>' +
+      '<input name="query" required placeholder="latest news"></div>' +
+      '<div class="field-group"><label>Max results</label>' +
+      '<input name="maxResults" type="number" value="5" class="narrow"></div></div>'
+    );
+  }
+  if (cap === "scrape") {
+    return (
+      '<div class="field-group"><label>URL</label>' +
+      '<input name="url" required size="50" placeholder="https://example.com"></div>' +
+      '<div class="field-group"><label>Max chars</label>' +
+      '<input name="maxChars" type="number" value="8000" class="narrow"></div>'
+    );
+  }
+  if (cap === "extract") {
+    return (
+      '<div class="field-group"><label>URLs (one per line)</label>' +
+      '<textarea name="urls" rows="3" placeholder="https://example.com"></textarea></div>' +
+      '<div class="field-group"><label>Query</label>' +
+      '<input name="query" placeholder="what is this about?"></div>'
+    );
+  }
+  if (cap === "crawl") {
+    return (
+      '<div class="field-group"><label>URL</label>' +
+      '<input name="url" required size="50" placeholder="https://example.com"></div>' +
+      '<div class="field-group"><label>Page limit</label>' +
+      '<input name="limit" type="number" value="10" class="narrow"></div>'
+    );
+  }
+  return (
+    '<div class="field-group"><label>URL</label>' +
+    '<input name="url" required size="50" placeholder="https://example.com"></div>' +
+    '<div class="field-group"><label>Link limit</label>' +
+    '<input name="limit" type="number" value="50" class="narrow"></div>'
+  );
+}
+
+function renderToolTab(cap) {
+  const el = document.getElementById("tabBody");
+  el.innerHTML =
+    '<form id="toolForm" class="panel">' +
+    toolFields(cap) +
+    '<div class="grid grid-2 chat-opts"><div class="field-group"><label>Provider pin</label>' +
+    '<input name="provider" placeholder="(none)"></div>' +
+    '<div class="field-group"><label>Policy</label>' +
+    '<select name="policy"><option value="">(default)</option>' +
+    policyOptions("") +
+    "</select></div></div>" +
+    '<div class="form-actions"><button type="submit" class="btn btn-primary">Run ' +
+    esc(cap) +
+    "</button></div></form>" +
+    '<div id="toolOut" class="playout"></div>';
+  document
+    .getElementById("toolForm")
+    .addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      const out = document.getElementById("toolOut");
+      const payload = {};
+      if (cap === "search") {
+        payload.query = String(f.get("query"));
+        payload.maxResults = Number(f.get("maxResults") || 5);
+      } else if (cap === "scrape") {
+        payload.url = String(f.get("url"));
+        if (f.get("maxChars")) payload.maxChars = Number(f.get("maxChars"));
+      } else if (cap === "extract") {
+        payload.urls = String(f.get("urls"))
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean)
+          .slice(0, 20);
+        if (f.get("query")) payload.query = String(f.get("query"));
+      } else {
+        payload.url = String(f.get("url"));
+        if (f.get("limit")) payload.limit = Number(f.get("limit"));
+      }
+      const routing = {};
+      if (f.get("provider")) routing.provider = String(f.get("provider"));
+      if (f.get("policy")) routing.policy = String(f.get("policy"));
+      if (Object.keys(routing).length) payload.routing = routing;
+      out.innerHTML = "<p class='text-muted'>Running…</p>";
+      try {
+        const res = await fetch("/v1/tools/" + cap, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const json = await res.json();
+        if (!res.ok)
+          throw new Error(json?.error?.message || "HTTP " + res.status);
+        out.innerHTML =
+          "<p>" +
+          badge("via " + res.headers.get("x-router-via"), "success") +
+          " " +
+          badge(
+            res.headers.get("x-router-attempts") + " attempt(s)",
+            "secondary",
+          ) +
+          "</p>" +
+          toolResultHtml(cap, json);
+      } catch (err) {
+        out.innerHTML =
+          "<p>" + pill("failed", "bad") + " " + esc(err.message) + "</p>";
+      }
+    });
+}
+
+function toolResultHtml(cap, json) {
+  if (cap === "search") {
+    if (!json.results || !json.results.length)
+      return '<pre class="dump">' + esc(JSON.stringify(json, null, 2)) + "</pre>";
+    return json.results
+      .map((r) => {
+        return (
+          '<div class="search-result"><div class="search-result-title">' +
+          esc(r.title || r.url) +
+          '</div><div class="search-result-url">' +
+          esc(r.url) +
+          '</div><div class="search-result-snippet">' +
+          esc((r.snippet || r.markdown || "").slice(0, 400)) +
+          "</div></div>"
+        );
+      })
+      .join("");
+  }
+  if (cap === "scrape") {
+    return (
+      '<pre class="dump">' +
+      esc(json.markdown || JSON.stringify(json, null, 2)) +
+      "</pre>"
+    );
+  }
+  if (cap === "extract") {
+    return (json.results || [])
+      .map((r) => {
+        const body = r.error
+          ? "<div>" + pill("error: " + r.error, "bad") + "</div>"
+          : '<div class="search-result-snippet">' +
+            esc((r.content || "").slice(0, 500)) +
+            "</div>";
+        return (
+          '<div class="search-result"><div class="search-result-title">' +
+          esc(r.title || r.url) +
+          '</div><div class="search-result-url">' +
+          esc(r.url) +
+          "</div>" +
+          body +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+  if (cap === "crawl") {
+    if (!json.pages || !json.pages.length)
+      return '<pre class="dump">' + esc(JSON.stringify(json, null, 2)) + "</pre>";
+    return json.pages
+      .map((p) => {
+        return (
+          '<div class="search-result"><div class="search-result-title">' +
+          esc(p.title || p.url) +
+          '</div><div class="search-result-url">' +
+          esc(p.url) +
+          '</div><div class="search-result-snippet">' +
+          esc((p.markdown || "").slice(0, 300)) +
+          "</div></div>"
+        );
+      })
+      .join("");
+  }
+  const links = json.links || [];
+  return (
+    '<div class="panel"><h3>' +
+    links.length +
+    " links</h3>" +
+    links
+      .map((l) => {
+        return (
+          '<div class="mono link-row">' + esc(l.url || l) + "</div>"
+        );
+      })
+      .join("") +
+    "</div>"
+  );
+}
+
+/* ---------- Resources ---------- */
+
+async function renderResourcesByProvider(q) {
+  const [providers, mappings] = await Promise.all([
+    Api.get("/api/providers"),
+    Api.get("/api/provider-resources"),
+  ]);
+  const needle = (q.get("q") || "").toLowerCase();
+  const capFilter = q.get("cap") || "";
+  const freeOnly = q.get("free") === "1";
+  const byProv = {};
+  mappings.forEach((m) => {
+    if (capFilter && !(m.capabilities || []).includes(capFilter)) return;
+    if (freeOnly && !isFreeId(m.upstreamId)) return;
+    if (needle) {
+      const hay = (
+        m.upstreamId +
+        " " +
+        m.resourceId +
+        " " +
+        m.providerId
+      ).toLowerCase();
+      if (!hay.includes(needle)) return;
+    }
+    (byProv[m.providerId] = byProv[m.providerId] || []).push(m);
+  });
+  const capOpts = CFG.CAPS.map((c) => {
+    return (
+      '<option value="' +
+      c +
+      '"' +
+      (c === capFilter ? " selected" : "") +
+      ">" +
+      c +
+      "</option>"
+    );
+  }).join("");
+  const groups = providers
+    .filter((p) => byProv[p.id] && byProv[p.id].length)
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((p) => {
+      const ms = byProv[p.id]
+        .slice()
+        .sort((a, b) => a.upstreamId.localeCompare(b.upstreamId));
+      const freeN = ms.filter((m) => isFreeId(m.upstreamId)).length;
+      const rows = ms
+        .slice(0, 200)
+        .map((m) => {
+          return (
+            "<tr><td class=\"cell-mono\">" +
+            esc(m.upstreamId) +
+            (isFreeId(m.upstreamId) ? " " + pill("free", "ok") : "") +
+            "</td><td><a class=\"mono\" href=\"#/resources?id=" +
+            encodeURIComponent(m.resourceId) +
+            '">' +
+            esc(shortResource(m.resourceId)) +
+            "</a></td><td>" +
+            (m.enabled ? pill("enabled", "ok") : pill("disabled", "warn")) +
+            "</td></tr>"
+          );
+        })
+        .join("");
+      return (
+        '<div class="panel"><div class="panel-header"><h3 class="panel-title">' +
+        esc(p.id) +
+        ' <span class="text-muted">' +
+        esc(p.displayName || "") +
+        "</span></h3><div>" +
+        badge(ms.length + " models", "secondary") +
+        " " +
+        badge(freeN + " free", "success") +
+        "</div></div>" +
+        '<div class="table-container"><table class="table"><thead><tr>' +
+        "<th>Provider model</th><th>Canonical</th><th>State</th>" +
+        "</tr></thead><tbody>" +
+        rows +
+        "</tbody></table></div>" +
+        (ms.length > 200
+          ? '<p class="text-muted">showing 200 of ' + ms.length + "</p>"
+          : "") +
+        "</div>"
+      );
+    })
+    .join("");
+  D.pc.innerHTML =
+    '<div class="section"><h1>Resources ' +
+    '<span class="text-muted">(' +
+    mappings.length +
+    " mappings)</span></h1>" +
+    '<p class="subtitle">Provider models — what each provider serves.</p>' +
+    '<div class="tabs"><button class="tab active" data-view="provider">By provider</button>' +
+    '<button class="tab" data-view="canonical">Canonical</button></div>' +
+    '<form class="inline-form" id="resFilter"><label>Search' +
+    '<input id="resQ" value="' +
+    esc(q.get("q") || "") +
+    '" placeholder="nemotron…"></label>' +
+    '<label>Capability<select id="resCap"><option value="">all</option>' +
+    capOpts +
+    '</select></label><label class="check-row"><input type="checkbox" id="resFree"' +
+    (q.get("free") === "1" ? " checked" : "") +
+    "> free only</label>" +
+    '<button type="submit" class="btn btn-secondary">Filter</button></form>' +
+    (groups || emptyState("No provider models match.")) +
+    "</div>";
+  document.getElementById("resFilter").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const qq = document.getElementById("resQ").value;
+    const cc = document.getElementById("resCap").value;
+    const ff = document.getElementById("resFree").checked;
+    location.hash =
+      "#/resources?view=provider&q=" +
+      encodeURIComponent(qq) +
+      (cc ? "&cap=" + encodeURIComponent(cc) : "") +
+      (ff ? "&free=1" : "");
+  });
+  D.pc.querySelectorAll("[data-view]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const v = b.getAttribute("data-view");
+      const params = new URLSearchParams(location.hash.split("?")[1] || "");
+      params.set("view", v);
+      location.hash = "#/resources?" + params.toString();
+    });
+  });
+}
+
+async function renderResources(q) {
+  const id = q.get("id");
+  if (id) {
+    renderResourceDetail(id, q.get("cap") || "llm.chat");
+    return;
+  }
+  const view = q.get("view") || "provider";
+  if (view === "provider") {
+    renderResourcesByProvider(q);
+    return;
+  }
+  const all = await Api.get("/api/resources");
+  const needle = (q.get("q") || "").toLowerCase();
+  const capFilter = q.get("cap") || "";
+  const freeOnly = q.get("free") === "1";
+  const list = all.filter((x) => {
+    const hit =
+      !needle ||
+      x.id.toLowerCase().includes(needle) ||
+      (x.displayName || "").toLowerCase().includes(needle);
+    return (
+      hit &&
+      (!capFilter || (x.capabilities || []).includes(capFilter)) &&
+      (!freeOnly || isFreeId(x.id))
+    );
+  });
+  let counts = {};
+  try {
+    counts = await Api.get(
+      "/api/routes/counts" +
+        (capFilter ? "?capability=" + encodeURIComponent(capFilter) : ""),
+    );
+  } catch {
+    counts = {};
+  }
+  const rows = list
+    .slice(0, 300)
+    .map((x) => {
+      const n = counts[x.id];
+      return (
+        "<tr><td><a class=\"mono\" href=\"#/resources?id=" +
+        encodeURIComponent(x.id) +
+        '">' +
+        esc(shortResource(x.id)) +
+        "</a>" +
+        (isFreeId(x.id) ? " " + pill("free", "ok") : "") +
+        "</td><td>" +
+        esc(x.kind) +
+        '</td><td class="cell-mono cell-muted">' +
+        esc((x.capabilities || []).join(" · ")) +
+        '</td><td class="cell-numeric">' +
+        (n ?? '<span class="text-muted">—</span>') +
+        "</td></tr>"
+      );
+    })
+    .join("");
+  const capOpts = CFG.CAPS.map((c) => {
+    return (
+      '<option value="' +
+      c +
+      '"' +
+      (c === capFilter ? " selected" : "") +
+      ">" +
+      c +
+      "</option>"
+    );
+  }).join("");
+  D.pc.innerHTML =
+    '<div class="section"><h1>Resources ' +
+    '<span class="text-muted">(' +
+    all.length +
+    ")</span></h1>" +
+    '<p class="subtitle">Canonical resources — what clients ask for.</p>' +
+    '<div class="tabs"><button class="tab" data-view="provider">By provider</button>' +
+    '<button class="tab active" data-view="canonical">Canonical</button></div>' +
+    '<form class="inline-form" id="resFilter"><label>Search' +
+    '<input id="resQ" value="' +
+    esc(q.get("q") || "") +
+    '" placeholder="nemotron…"></label>' +
+    '<label>Capability<select id="resCap"><option value="">all</option>' +
+    capOpts +
+    '</select></label><label class="check-row"><input type="checkbox" id="resFree"' +
+    (q.get("free") === "1" ? " checked" : "") +
+    "> free only</label>" +
+    '<button type="submit" class="btn btn-secondary">Filter</button></form>' +
+    (rows
+      ? '<div class="table-container"><table class="table"><thead><tr>' +
+        "<th>Canonical ID</th><th>Kind</th><th>Capabilities</th><th>Routes</th>" +
+        "</tr></thead><tbody>" +
+        rows +
+        "</tbody></table></div>"
+      : emptyState("No resources match.")) +
+    (list.length > 300
+      ? '<p class="text-muted">showing 300 of ' + list.length + "</p>"
+      : "") +
+    '<div class="section"><h2 class="section-title">Add canonical resource</h2>' +
+    '<form class="inline-form" id="addRes"><label>ID' +
+    '<input name="id" required placeholder="llm:model:my-model" size="30"></label>' +
+    "<label>Display name<input name=\"displayName\" required></label>" +
+    '<label>Kind<select name="kind"><option value="llm_model">llm_model</option>' +
+    '<option value="capability">capability</option></select></label>' +
+    '<button type="submit" class="btn btn-primary">Add</button></form></div></div>';
+  document.getElementById("resFilter").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const qq = document.getElementById("resQ").value;
+    const cc = document.getElementById("resCap").value;
+    const ff = document.getElementById("resFree").checked;
+    location.hash =
+      "#/resources?view=canonical&q=" +
+      encodeURIComponent(qq) +
+      (cc ? "&cap=" + encodeURIComponent(cc) : "") +
+      (ff ? "&free=1" : "");
+  });
+  D.pc.querySelectorAll("[data-view]").forEach((b) => {
+    b.addEventListener("click", () => {
+      const v = b.getAttribute("data-view");
+      const params = new URLSearchParams(location.hash.split("?")[1] || "");
+      params.set("view", v);
+      location.hash = "#/resources?" + params.toString();
+    });
+  });
+  document.getElementById("addRes").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await Api.post("/api/resources", {
+      id: String(f.get("id")),
+      displayName: String(f.get("displayName")),
+      kind: String(f.get("kind")),
+      capabilities: ["llm.chat"],
+    });
+    Toast.ok("Resource added");
+    Router.navigate();
+  });
+}
+
+async function renderResourceDetail(id, cap) {
+  const [mappings, providers] = await Promise.all([
+    Api.get("/api/provider-resources?resource=" + encodeURIComponent(id)),
+    Api.get("/api/providers"),
+  ]);
+  const caps = [...new Set(mappings.flatMap((x) => x.capabilities || []))];
+  if (!caps.includes(cap)) cap = caps[0] || "llm.chat";
+  const routes = await Api.get(
+    "/api/routes?resource=" +
+      encodeURIComponent(id) +
+      "&capability=" +
+      encodeURIComponent(cap),
+  );
+  const byMapping = {};
+  routes.forEach((r) => {
+    (byMapping[r.providerResourceId] =
+      byMapping[r.providerResourceId] || []).push(r);
+  });
+  const capOpts = caps
+    .map((c) => {
+      return (
+        '<option value="' +
+        esc(c) +
+        '"' +
+        (c === cap ? " selected" : "") +
+        ">" +
+        esc(c) +
+        "</option>"
+      );
+    })
+    .join("");
+  const provOpts = providers
+    .map((p) => "<option>" + esc(p.id) + "</option>")
+    .join("");
+  const blocks = mappings
+    .map((m) => {
+      const rs = (byMapping[m.id] || []).filter((r) => r.credentialId);
+      const rows = rs
+        .map((r) => {
+          const qq = (r.quotas || [])[0];
+          return (
+            "<tr>" +
+            '<td class="cell-mono">' +
+            esc(r.accountId) +
+            "</td>" +
+            '<td class="cell-mono">' +
+            esc(r.credentialId) +
+            "</td>" +
+            "<td>" +
+            quotaBar(qq) +
+            '<div class="text-muted mono tiny">' +
+            (qq ? esc(qq.metric) : "") +
+            "</div></td>" +
+            "<td>" +
+            (qq ? fmtCountdown(qq.resetAt) : "—") +
+            "</td>" +
+            "<td>" +
+            healthBadge(r.health) +
+            "</td>" +
+            '<td class="cell-numeric">' +
+            (r.health?.latencyEmaMs != null
+              ? Math.round(r.health.latencyEmaMs) + "ms"
+              : "—") +
+            "</td></tr>"
+          );
+        })
+        .join("");
+      return (
+        '<div class="panel"><div class="panel-header"><h3 class="panel-title">' +
+        esc(m.providerId) +
+        ' → <span class="mono">' +
+        esc(m.upstreamId) +
+        "</span> " +
+        (isFreeId(m.upstreamId) ? pill("free", "ok") + " " : "") +
+        (m.enabled ? pill("enabled", "ok") : pill("disabled", "warn")) +
+        '</h3><div class="row tight">' +
+        '<button class="toggle-btn ' +
+        (m.enabled ? "disable" : "enable") +
+        '" data-mapping="' +
+        esc(m.id) +
+        '" data-to="' +
+        (m.enabled ? "false" : "true") +
+        '">' +
+        (m.enabled ? "Disable" : "Enable") +
+        "</button>" +
+        '<button class="btn btn-danger btn-small" data-delmapping="' +
+        esc(m.id) +
+        '">Delete mapping</button></div></div>' +
+        (rows
+          ? '<div class="table-container"><table class="table"><thead><tr>' +
+            "<th>Account</th><th>Credential</th><th>Quota</th>" +
+            "<th>Reset in</th><th>Health</th><th>Latency</th>" +
+            "</tr></thead><tbody>" +
+            rows +
+            "</tbody></table></div>"
+          : "<p class='text-muted'>No credentials — add keys to create routes.</p>") +
+        "</div>"
+      );
+    })
+    .join("");
+
+  D.pc.innerHTML =
+    '<div class="section"><h1 class="mono">' +
+    esc(shortResource(id)) +
+    (isFreeId(id) ? " " + pill("free", "ok") : "") +
+    "</h1>" +
+    '<p class="subtitle">' +
+    esc(id) +
+    " · " +
+    routes.length +
+    ' executable routes · <span class="mono">' +
+    esc(cap) +
+    "</span></p>" +
+    '<div class="row gap"><button class="btn btn-ghost btn-small" id="backRes">← all resources</button>' +
+    '<select id="detailCap" class="btn btn-secondary btn-small">' +
+    capOpts +
+    "</select>" +
+    '<button class="btn btn-danger btn-small" id="delRes">Delete</button></div>' +
+    blocks +
+    '<div class="section"><h2 class="section-title">Add provider mapping</h2>' +
+    '<form class="inline-form" id="addMap"><label>Provider<select name="providerId">' +
+    provOpts +
+    '</select></label><label>Upstream ID' +
+    '<input name="upstreamId" required size="28" placeholder="vendor/model-id"></label>' +
+    '<button type="submit" class="btn btn-primary">Map</button></form></div>' +
+    '<div class="section"><h2 class="section-title">Simulate routing</h2>' +
+    '<form class="inline-form" id="simForm"><label>Policy<select name="policy">' +
+    policyOptions("burn") +
+    '</select></label><label>Provider pin<input name="provider" size="12" placeholder="(none)"></label>' +
+    '<button type="submit" class="btn btn-secondary">Rank</button></form>' +
+    '<div id="simOut"></div></div></div>';
+
+  document.getElementById("backRes").addEventListener("click", () => {
+    location.hash = "#/resources";
+  });
+  document.getElementById("detailCap").addEventListener("change", (e) => {
+    location.hash =
+      "#/resources?id=" +
+      encodeURIComponent(id) +
+      "&cap=" +
+      encodeURIComponent(e.target.value);
+  });
+  document.getElementById("delRes").addEventListener("click", async () => {
+    if (!window.confirm("Delete " + id + "?")) return;
+    await Api.del("/api/resources/" + encodeURIComponent(id));
+    Toast.ok("Deleted");
+    location.hash = "#/resources";
+  });
+  D.pc.querySelectorAll("[data-mapping]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      await Api.patch(
+        "/api/provider-resources/" + encodeURIComponent(b.getAttribute("data-mapping")),
+        { enabled: b.getAttribute("data-to") === "true" },
+      );
+      Toast.ok(
+        "Mapping " + (b.getAttribute("data-to") === "true" ? "enabled" : "disabled"),
+      );
+      Router.navigate();
+    });
+  });
+  D.pc.querySelectorAll("[data-delmapping]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!window.confirm("Delete mapping?")) return;
+      await Api.del(
+        "/api/provider-resources/" + encodeURIComponent(b.getAttribute("data-delmapping")),
+      );
+      Toast.ok("Deleted");
+      Router.navigate();
+    });
+  });
+  document.getElementById("addMap").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await Api.post("/api/provider-resources", {
+      resourceId: id,
+      providerId: String(f.get("providerId")),
+      upstreamId: String(f.get("upstreamId")),
+      capabilities: [cap],
+    });
+    Toast.ok("Mapping added");
+    Router.navigate();
+  });
+  document.getElementById("simForm").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const out = document.getElementById("simOut");
+    out.innerHTML = "<p class='text-muted'>Ranking…</p>";
+    const d = await Api.post("/api/routing/simulate", {
+      resource: id,
+      capability: cap,
+      policy: String(f.get("policy")),
+      provider: String(f.get("provider")) || undefined,
+    });
+    const elig = d.eligible
+      .slice(0, 25)
+      .map((r, i) => {
+        return (
+          "<tr>" +
+          '<td class="cell-numeric">' +
+          (i + 1) +
+          "</td>" +
+          '<td class="cell-mono">' +
+          esc(r.provider) +
+          " / " +
+          esc(r.account) +
+          '<br><span class="text-muted">' +
+          esc(r.upstream) +
+          "</span></td>" +
+          '<td class="cell-numeric">' +
+          Number(r.score).toFixed(3) +
+          "</td>" +
+          "<td>" +
+          esc(r.reason) +
+          "</td></tr>"
+        );
+      })
+      .join("");
+    const filt = d.filtered
+      .slice(0, 25)
+      .map((r) => {
+        return (
+          "<tr>" +
+          '<td class="cell-mono">' +
+          esc(r.provider) +
+          " / " +
+          esc(r.account) +
+          "</td>" +
+          "<td>" +
+          esc(r.reason) +
+          "</td></tr>"
+        );
+      })
+      .join("");
+    out.innerHTML =
+      '<h2 class="section-title">Eligible (' +
+      d.eligible.length +
+      ')</h2><div class="table-container"><table class="table"><thead><tr>' +
+      "<th>#</th><th>Route</th><th>Score</th><th>Reason</th>" +
+      "</tr></thead><tbody>" +
+      elig +
+      "</tbody></table></div>" +
+      (d.filtered.length
+        ? '<h2 class="section-title">Filtered out (' +
+          d.filtered.length +
+          ')</h2><div class="table-container"><table class="table"><thead><tr>' +
+          "<th>Route</th><th>Reason</th>" +
+          "</tr></thead><tbody>" +
+          filt +
+          "</tbody></table></div>"
+        : "");
+  });
+}
+
+/* ---------- Providers & Keys ---------- */
+
+async function renderProviders(q) {
+  const id = q.get("id");
+  if (id) {
+    renderProviderDetail(id);
+    return;
+  }
+  const providers = await Api.get("/api/providers");
+  const needle = (q.get("q") || "").toLowerCase();
+  const list = providers.filter(
+    (x) =>
+      !needle ||
+      x.id.includes(needle) ||
+      (x.displayName || "").toLowerCase().includes(needle),
+  );
+  const origin = location.origin;
+  const rows = list
+    .map((x) => {
+      return (
+        "<tr><td><a href=\"#/providers?id=" +
+        esc(x.id) +
+        '"><strong>' +
+        esc(x.id) +
+        "</strong></a><br>" +
+        '<span class="text-muted">' +
+        esc(x.displayName) +
+        "</span></td>" +
+        '<td class="cell-mono cell-muted">' +
+        esc(x.baseUrl || "—") +
+        "</td><td>" +
+        pill(x.enabled ? "enabled" : "disabled", x.enabled ? "ok" : "warn") +
+        '</td><td class="cell-numeric">' +
+        x.priority +
+        "</td><td>" +
+        '<button class="toggle-btn ' +
+        (x.enabled ? "disable" : "enable") +
+        '" data-provider="' +
+        esc(x.id) +
+        '" data-to="' +
+        (x.enabled ? "false" : "true") +
+        '">' +
+        (x.enabled ? "Disable" : "Enable") +
+        "</button></td></tr>"
+      );
+    })
+    .join("");
+  D.pc.innerHTML =
+    '<div class="section"><h1>Providers & Keys ' +
+    '<span class="text-muted">(' +
+    providers.length +
+    ")</span></h1>" +
+    '<p class="subtitle">Each upstream provider owns accounts and API keys.</p>' +
+    '<div class="connect-banner"><h3>Client connection guide</h3>' +
+    "<p>Point any OpenAI-compatible client at this router:</p>" +
+    '<div class="connect-grid">' +
+    '<div class="connect-box"><span class="connect-label">OpenAI base URL</span>' +
+    '<div class="connect-val"><span class="mono">' +
+    esc(origin + "/v1") +
+    "</span>" +
+    copyBtn(origin + "/v1", "Copy") +
+    "</div></div>" +
+    '<div class="connect-box"><span class="connect-label">Chat endpoint</span>' +
+    '<div class="connect-val"><span class="mono">' +
+    esc(origin + "/v1/chat/completions") +
+    "</span>" +
+    copyBtn(origin + "/v1/chat/completions", "Copy") +
+    "</div></div></div></div>" +
+    '<form class="inline-form" id="provFilter"><label>Search' +
+    '<input id="provQ" value="' +
+    esc(q.get("q") || "") +
+    '" placeholder="groq…"></label>' +
+    '<button type="submit" class="btn btn-secondary">Filter</button></form>' +
+    '<div class="table-container"><table class="table"><thead><tr>' +
+    "<th>Provider</th><th>Base URL</th><th>State</th><th>Priority</th><th></th>" +
+    "</tr></thead><tbody>" +
+    rows +
+    "</tbody></table></div>" +
+    (list.length ? "" : emptyState("No providers match.")) +
+    "</div>";
+  document.getElementById("provFilter").addEventListener("submit", (e) => {
+    e.preventDefault();
+    location.hash =
+      "#/providers?q=" + encodeURIComponent(document.getElementById("provQ").value);
+  });
+  D.pc.querySelectorAll("[data-provider]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      await Api.patch(
+        "/api/providers/" + encodeURIComponent(b.getAttribute("data-provider")),
+        { enabled: b.getAttribute("data-to") === "true" },
+      );
+      Toast.ok(
+        "Provider " + (b.getAttribute("data-to") === "true" ? "enabled" : "disabled"),
+      );
+      Router.navigate();
+    });
+  });
+}
+
+function credentialRows(creds) {
+  return creds
+    .map((c) => {
+      return (
+        "<tr>" +
+        '<td class="cell-mono">' +
+        esc(c.id) +
+        copyBtn(c.id, "Copy") +
+        "</td>" +
+        "<td>" +
+        esc(c.label || "") +
+        "</td>" +
+        "<td>" +
+        pill(c.status, c.status) +
+        "</td>" +
+        '<td class="cell-muted">' +
+        (c.lastValidatedAt ? esc(fmtTime(c.lastValidatedAt)) : "—") +
+        "</td>" +
+        '<td><div class="row tight">' +
+        '<button class="btn btn-secondary btn-small" data-validate-cred="' +
+        esc(c.id) +
+        '">Validate</button>' +
+        '<button class="toggle-btn ' +
+        (c.status === "active" ? "disable" : "enable") +
+        '" data-cred-status="' +
+        esc(c.id) +
+        '" data-to="' +
+        (c.status === "active" ? "disabled" : "active") +
+        '">' +
+        (c.status === "active" ? "Disable" : "Enable") +
+        "</button>" +
+        '<button class="btn btn-danger btn-small" data-del-cred="' +
+        esc(c.id) +
+        '">Delete</button></div></td></tr>"'
+      );
+    })
+    .join("");
+}
+
+async function renderProviderDetail(id) {
+  const [providers, accounts, creds] = await Promise.all([
+    Api.get("/api/providers"),
+    Api.get("/api/accounts?provider=" + encodeURIComponent(id)),
+    Api.get("/api/credentials"),
+  ]);
+  const p = providers.find((x) => x.id === id);
+  if (!p) {
+    D.pc.innerHTML = "<h1>Unknown provider</h1>" + emptyState("No such provider: " + id);
+    return;
+  }
+  const mine = creds.filter((c) => c.providerId === id);
+  const byAccount = {};
+  mine.forEach((c) => {
+    (byAccount[c.accountId] = byAccount[c.accountId] || []).push(c);
+  });
+  const acctBlocks = accounts
+    .map((a) => {
+      const keys = byAccount[a.id] || [];
+      return (
+        '<div class="tree-node"><div class="tree-head">' +
+        '<span class="name mono">' +
+        esc(a.id) +
+        "</span> " +
+        pill(a.enabled ? "on" : "off", a.enabled ? "ok" : "warn") +
+        ' <span class="text-muted">' +
+        esc(a.displayName || "") +
+        '</span><span class="grow"></span>' +
+        '<span class="text-muted">' +
+        keys.length +
+        ' keys</span><button class="btn btn-danger btn-small" data-delaccount="' +
+        esc(a.id) +
+        '">Delete</button></div><div class="tree-children">' +
+        (keys.length
+          ? '<div class="table-container"><table class="table"><thead><tr>' +
+            "<th>Credential</th><th>Label</th><th>Status</th><th>Validated</th><th></th>" +
+            "</tr></thead><tbody>" +
+            credentialRows(keys) +
+            "</tbody></table></div>"
+          : "<p class='text-muted'>No keys.</p>") +
+        "</div></div>"
+      );
+    })
+    .join("");
+  const acctOpts = accounts.map((a) => "<option>" + esc(a.id) + "</option>").join("");
+  D.pc.innerHTML =
+    '<div class="section"><h1>' +
+    esc(p.id) +
+    "</h1>" +
+    '<p class="subtitle">' +
+    esc(p.displayName) +
+    " · " +
+    accounts.length +
+    " accounts · " +
+    mine.length +
+    " keys</p>" +
+    '<div class="row gap"><button class="btn btn-ghost btn-small" id="backProv">← all providers</button>' +
+    '<button class="btn btn-danger btn-small" id="delProv">Delete provider</button></div>' +
+    '<div class="section"><h2 class="section-title">Config</h2>' +
+    '<form class="inline-form" id="saveProv"><label>Display name' +
+    '<input name="displayName" value="' +
+    esc(p.displayName) +
+    '"></label><label>Base URL' +
+    '<input name="baseUrl" size="42" value="' +
+    esc(p.baseUrl || "") +
+    '"></label><label>Priority' +
+    '<input name="priority" type="number" value="' +
+    p.priority +
+    '" class="narrow"></label><label>Enabled' +
+    '<select name="enabled"><option value="true"' +
+    (p.enabled ? " selected" : "") +
+    '>on</option><option value="false"' +
+    (!p.enabled ? " selected" : "") +
+    ">off</option></select></label>" +
+    '<button type="submit" class="btn btn-primary">Save</button></form></div>' +
+    '<div class="section"><h2 class="section-title">Accounts & Keys (' +
+    accounts.length +
+    ')</h2><div class="row"><button class="btn btn-secondary btn-small" id="valAll">Validate all stale</button></div>' +
+    '<div id="jobOut"></div><div class="tree">' +
+    (acctBlocks || emptyState("No accounts.")) +
+    "</div></div>" +
+    '<div class="section"><h2 class="section-title">Add account</h2>' +
+    '<form class="inline-form" id="addAcct"><label>Account ID' +
+    '<input name="id" required placeholder="' +
+    esc(id) +
+    '-main"></label><label>Display<input name="displayName"></label>' +
+    '<button type="submit" class="btn btn-primary">Add</button></form></div>' +
+    '<div class="section"><h2 class="section-title">Add key</h2>' +
+    '<form class="inline-form" id="addCred"><label>Account<select name="accountId">' +
+    acctOpts +
+    '</select></label><label>Label<input name="label" placeholder="main"></label>' +
+    '<label>Secret<input name="secret" required type="password" size="34" autocomplete="off"></label>' +
+    '<button type="submit" class="btn btn-primary">Add</button></form>' +
+    '<p class="text-muted">Secrets are encrypted at rest.</p></div></div>';
+
+  document.getElementById("backProv").addEventListener("click", () => {
+    location.hash = "#/providers";
+  });
+  document.getElementById("delProv").addEventListener("click", async () => {
+    if (!window.confirm("Delete " + id + " + ALL accounts/keys?")) return;
+    await Api.del("/api/providers/" + encodeURIComponent(id));
+    Toast.ok("Provider deleted");
+    location.hash = "#/providers";
+  });
+  document.getElementById("saveProv").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await Api.patch("/api/providers/" + encodeURIComponent(id), {
+      displayName: String(f.get("displayName")),
+      baseUrl: String(f.get("baseUrl")) || null,
+      priority: Number(f.get("priority")),
+      enabled: String(f.get("enabled")) === "true",
+    });
+    Toast.ok("Provider saved");
+    Router.navigate();
+  });
+  D.pc.querySelectorAll("[data-delaccount]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!window.confirm("Delete " + b.getAttribute("data-delaccount") + "?")) return;
+      await Api.del("/api/accounts/" + encodeURIComponent(b.getAttribute("data-delaccount")));
+      Toast.ok("Account deleted");
+      Router.navigate();
+    });
+  });
+  document.getElementById("valAll").addEventListener("click", async () => {
+    const out = document.getElementById("jobOut");
+    out.innerHTML = "<p class='text-muted'>Validating…</p>";
+    try {
+      const s = await Api.post("/api/maintenance/validate", {
+        provider: id,
+        limit: 50,
+      });
+      out.innerHTML =
+        "<p>" +
+        badge(s.ok + "/" + s.checked + " valid", s.invalid ? "warning" : "success") +
+        " " +
+        badge(s.skippedFresh + " fresh-skipped", "secondary") +
+        "</p>";
+      Toast.ok("Validation: " + s.ok + " ok, " + s.invalid + " invalid");
+    } catch (err) {
+      out.innerHTML = "<p>" + pill("job failed", "bad") + " " + esc(err.message) + "</p>";
+    }
+  });
+  document.getElementById("addAcct").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await Api.post("/api/accounts", {
+      id: String(f.get("id")),
+      providerId: id,
+      displayName: String(f.get("displayName")) || null,
+    });
+    Toast.ok("Account added");
+    Router.navigate();
+  });
+  document.getElementById("addCred").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await Api.post("/api/credentials", {
+      accountId: String(f.get("accountId")),
+      label: String(f.get("label")) || null,
+      secret: String(f.get("secret")),
+    });
+    Toast.ok("Key stored");
+    Router.navigate();
+  });
+}
+
+/* ---------- Quotas & Usage ---------- */
+
+async function renderQuotas(q) {
+  const [windows, creds] = await Promise.all([
+    Api.get("/api/quotas"),
+    Api.get("/api/credentials"),
+  ]);
+  const needle = (q.get("q") || "").toLowerCase();
+  const list = windows.filter(
+    (w) =>
+      !needle ||
+      w.credentialId.toLowerCase().includes(needle) ||
+      w.metric.toLowerCase().includes(needle),
+  );
+  const credOpts = creds
+    .filter((c) => c.status === "active")
+    .map((c) => '<option value="' + esc(c.id) + '">' + esc(c.id) + "</option>")
+    .join("");
+  const rows = list
+    .slice(0, 300)
+    .map((w) => {
+      return (
+        "<tr>" +
+        '<td class="cell-mono">' +
+        esc(w.credentialId) +
+        "</td><td>" +
+        esc(w.metric) +
+        '</td><td class="cell-mono cell-numeric">' +
+        esc(w.usedValue) +
+        "/" +
+        esc(w.limitValue) +
+        "</td><td>" +
+        quotaBar(w) +
+        "</td><td>" +
+        esc(w.windowKind) +
+        "</td><td>" +
+        fmtCountdown(w.resetAt) +
+        "</td><td>" +
+        (w.hard ? "yes" : "no") +
+        '</td><td class="cell-muted">' +
+        esc(w.source) +
+        '</td><td><button class="btn btn-danger btn-small" data-delquota="' +
+        esc(w.id) +
+        '">Delete</button></td></tr>'
+      );
+    })
+    .join("");
+  D.pc.innerHTML =
+    '<div class="section"><h1>Quotas & Usage ' +
+    '<span class="text-muted">(' +
+    windows.length +
+    " windows)</span></h1>" +
+    '<p class="subtitle">Static windows are provider-reported; rolling windows reset live.</p>' +
+    '<form class="inline-form" id="quotausage"><label>Live usage' +
+    '<input name="credentialId" required size="28" placeholder="cred-…" value="' +
+    esc(q.get("credential") || "") +
+    '"></label><button type="submit" class="btn btn-secondary">Look up</button></form>' +
+    '<div id="usageOut"></div>' +
+    '<form class="inline-form" id="quotafilter"><label>Filter' +
+    '<input id="quotaQ" value="' +
+    esc(q.get("q") || "") +
+    '" placeholder="credential / metric"></label>' +
+    '<button type="submit" class="btn btn-secondary">Filter</button></form>' +
+    '<div class="table-container"><table class="table"><thead><tr>' +
+    "<th>Credential</th><th>Metric</th><th>Used / Limit</th><th>Left</th>" +
+    "<th>Window</th><th>Reset in</th><th>Hard</th><th>Source</th><th></th>" +
+    "</tr></thead><tbody>" +
+    rows +
+    "</tbody></table></div>" +
+    (list.length > 300
+      ? '<p class="text-muted">showing 300 of ' + list.length + "</p>"
+      : "") +
+    '<div class="section"><h2 class="section-title">Add quota window</h2>' +
+    '<form class="inline-form" id="addQuota"><label>Credential<select name="credentialId">' +
+    credOpts +
+    '</select></label><label>Metric<select name="metric">' +
+    ["requests", "total_tokens", "input_tokens", "output_tokens", "credits", "usd", "searches", "pages", "crawl_units"]
+      .map((m) => "<option>" + m + "</option>")
+      .join("") +
+    '</select></label><label>Limit<input name="limitValue" type="number" value="1000" class="narrow"></label>' +
+    '<label>Used<input name="usedValue" type="number" value="0" class="narrow"></label>' +
+    '<label>Window<select name="windowKind">' +
+    ["calendar_day", "calendar_month", "calendar_week", "calendar_hour", "rolling_seconds", "fixed"]
+      .map((m) => "<option>" + m + "</option>")
+      .join("") +
+    '</select></label><label>Reset at<input name="resetAt" placeholder="2026-10-01T00:00:00Z" size="22"></label>' +
+    '<label>Hard<select name="hard"><option value="true">yes</option><option value="false">no</option></select></label>' +
+    '<button type="submit" class="btn btn-primary">Add</button></form></div></div>';
+
+  document.getElementById("quotausage").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const cid = String(new FormData(e.target).get("credentialId"));
+    const out = document.getElementById("usageOut");
+    try {
+      const u = await Api.get("/api/usage?credential=" + encodeURIComponent(cid));
+      out.innerHTML =
+        '<div class="panel"><h3 class="mono panel-title">' +
+        esc(cid) +
+        "</h3><p>" +
+        badge("requests/24h: " + u.requests, "primary") +
+        " " +
+        badge("tokens/24h: " + fmtNum(u.total_tokens), "primary") +
+        " " +
+        badge("searches: " + u.searches, "info") +
+        '</p><p class="text-muted mono">in ' +
+        esc(u.input_tokens) +
+        " / out " +
+        esc(u.output_tokens) +
+        " · since " +
+        esc(u.since) +
+        "</p></div>";
+    } catch (err) {
+      out.innerHTML = "<p>" + pill("lookup failed", "bad") + " " + esc(err.message) + "</p>";
+    }
+  });
+  document.getElementById("quotafilter").addEventListener("submit", (e) => {
+    e.preventDefault();
+    location.hash =
+      "#/quotas?q=" + encodeURIComponent(document.getElementById("quotaQ").value);
+  });
+  D.pc.querySelectorAll("[data-delquota]").forEach((b) => {
+    b.addEventListener("click", async () => {
+      if (!window.confirm("Delete quota window?")) return;
+      await Api.del("/api/quotas/" + encodeURIComponent(b.getAttribute("data-delquota")));
+      Toast.ok("Quota deleted");
+      Router.navigate();
+    });
+  });
+  document.getElementById("addQuota").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    await Api.post("/api/quotas", {
+      credentialId: String(f.get("credentialId")),
+      metric: String(f.get("metric")),
+      limitValue: Number(f.get("limitValue")),
+      usedValue: Number(f.get("usedValue") || 0),
+      windowKind: String(f.get("windowKind")),
+      resetAt: String(f.get("resetAt")) || null,
+      hard: String(f.get("hard")) === "true",
+      source: "configured",
+    });
+    Toast.ok("Quota added");
+    Router.navigate();
+  });
+}
+
+/* ---------- Requests ---------- */
+
+async function renderRequests(q) {
+  const id = q.get("id");
+  if (id) {
+    const log = await Api.get("/api/requests/" + encodeURIComponent(id));
+    const rows = Object.entries(log)
+      .map((pair) => {
+        const v = pair[1];
+        return (
+          "<dt>" +
+          esc(pair[0]) +
+          "</dt><dd>" +
+          esc(typeof v === "object" ? JSON.stringify(v, null, 2) : (v ?? "—")) +
+          "</dd>"
+        );
+      })
+      .join("");
+    D.pc.innerHTML =
+      '<div class="section"><h1>Request</h1>' +
+      '<p><button class="btn btn-ghost btn-small" id="backReq">← all requests</button></p>' +
+      '<div class="panel"><dl class="kv-display">' +
+      rows +
+      "</dl></div></div>";
+    document.getElementById("backReq").addEventListener("click", () => {
+      location.hash = "#/requests";
+    });
+    return;
+  }
+  const logs = await Api.get("/api/requests?limit=200");
+  const st = q.get("status") || "";
+  const pf = (q.get("provider") || "").toLowerCase();
+  const list = logs.filter(
+    (l) =>
+      (!st || l.status === st) &&
+      (!pf || (l.selectedProviderId || "").toLowerCase().includes(pf)),
+  );
+  D.pc.innerHTML =
+    '<div class="section"><h1>Requests ' +
+    '<span class="text-muted">(latest ' +
+    logs.length +
+    ")</span></h1>" +
+    '<form class="inline-form" id="reqFilter"><label>Status<select id="reqStatus">' +
+    '<option value="">all</option>' +
+    '<option value="success"' +
+    (st === "success" ? " selected" : "") +
+    ">success</option>" +
+    '<option value="error"' +
+    (st === "error" ? " selected" : "") +
+    ">error</option></select></label>" +
+    '<label>Provider<input id="reqProv" value="' +
+    esc(q.get("provider") || "") +
+    '" placeholder="groq…" size="14"></label>' +
+    '<button type="submit" class="btn btn-secondary">Filter</button></form>' +
+    requestTable(list, "No requests match.") +
+    "</div>";
+  document.getElementById("reqFilter").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const s = document.getElementById("reqStatus").value;
+    const p = document.getElementById("reqProv").value;
+    location.hash =
+      "#/requests?status=" +
+      encodeURIComponent(s) +
+      "&provider=" +
+      encodeURIComponent(p);
+  });
+}
+
+/* ============================================================
+   Router (after Pages — avoids TDZ crash)
+   ============================================================ */
+
 const ROUTES = {
   "/overview": renderOverview,
   "/playground": renderPlayground,
@@ -240,718 +1919,193 @@ const ROUTES = {
   "/quotas": renderQuotas,
   "/requests": renderRequests,
 };
-const SKELETON = `<h1>&nbsp;</h1><div class="skel">
-  <div class="skel-line" style="width:42%"></div>
-  <div class="skel-line" style="width:88%"></div>
-  <div class="skel-line" style="width:67%"></div>
-  <div class="skel-line" style="width:78%"></div></div>`;
-function router() {
-  const hash = location.hash || "#/overview";
-  const [path, query] = hash.slice(1).split("?");
-  const fn = ROUTES[path] || renderOverview;
-  pageTitle.textContent = TITLES[path] || "Overview";
-  document.querySelectorAll(".side a").forEach((a) =>
-    a.classList.toggle("active", a.getAttribute("href") === "#" + path));
-  document.body.classList.remove("nav-open");
-  document.getElementById("scrim").classList.add("hidden");
-  main.innerHTML = SKELETON;
-  fn(new URLSearchParams(query || "")).catch((e) => {
-    main.innerHTML = `<h1>Something went wrong</h1><div class="empty"><p>${esc(e.message)}</p><p><button class="ghost small" onclick="location.reload()">Retry</button></p></div>`;
-  });
-}
-window.addEventListener("hashchange", router);
 
-const refreshBtn = document.getElementById("refreshbtn");
-if (refreshBtn) {
-  refreshBtn.onclick = () => {
-    loadStatus();
-    router();
-    showToast("Refreshed");
-  };
-}
-setInterval(loadStatus, 30000);
-
-/* ---------------- overview ---------------- */
-async function renderOverview() {
-  const o = await api("GET", "/api/overview");
-  const recent = await api("GET", "/api/requests?limit=12");
-  const hist = await api("GET", "/api/requests?limit=500").catch(() => []);
-  const buckets = new Array(24).fill(0);
-  const errs = new Array(24).fill(0);
-  const now = Date.now();
-  hist.forEach((l) => {
-    const h = Math.floor((now - Date.parse(l.createdAt)) / 3600000);
-    if (h >= 0 && h < 24) {
-      buckets[23 - h]++;
-      if (l.status !== "success") errs[23 - h]++;
-    }
-  });
-  const max = Math.max(1, ...buckets);
-  const st = o.credentialsByStatus;
-  main.innerHTML = `<h1>Overview</h1>
-    <p class="sub">Live state of the router — everything below is read from the API, nothing is mocked.</p>
-    <div class="cards">
-      <a class="card" href="#/providers"><div class="n">${o.providers}</div><div class="l">${o.providersEnabled} enabled providers</div></a>
-      <a class="card" href="#/providers"><div class="n">${o.accounts}</div><div class="l">accounts</div></a>
-      <a class="card" href="#/providers"><div class="n">${o.credentials}</div><div class="l"><span class="ok">● ${st.active}</span> · <span class="warn">● ${st.disabled}</span> · <span class="bad">● ${st.invalid}</span></div></a>
-      <a class="card" href="#/resources"><div class="n">${o.resources}</div><div class="l">canonical resources</div></a>
-      <a class="card" href="#/resources"><div class="n">${o.mappings}</div><div class="l">provider mappings</div></a>
-      <a class="card" href="#/requests"><div class="n">${o.requests24h}</div><div class="l">requests / 24h${o.successRate24h == null ? "" : ` · ${Math.round(o.successRate24h * 100)}% ok`}</div></a>
-      <a class="card" href="#/quotas"><div class="n small">${Number(o.tokens24h).toLocaleString()}</div><div class="l">tokens / 24h</div></a>
-    </div>
-    <h2>Requests — last 24h <span class="count">hourly, oldest → newest</span></h2>
-    <div class="hist">${buckets.map((b, i) => `<i style="height:${Math.max(3, Math.round((100 * b) / max))}%;${errs[i] && b ? "background:var(--warn)" : ""}" title="${b} requests, ${errs[i]} failed"></i>`).join("")}</div>
-    <h2>Recent requests</h2>
-    ${reqTable(recent)}`;
-}
-
-/* ---------------- playground ---------------- */
-async function renderPlayground(q) {
-  const settings = await api("GET", "/api/settings").catch(() => ({ defaultPolicy: "auto" }));
-  const tab = TOOL_CAPS.includes(q.get("tab")) ? q.get("tab") : "chat";
-  main.innerHTML = `<h1>Playground</h1>
-    <p class="sub">Send real requests through the routing core. Every run shows the actual route, policy and attempts.</p>
-    <div class="tabs" role="tablist">
-      <button data-tab="chat" class="${tab === "chat" ? "on" : ""}">Chat</button>
-      ${TOOL_CAPS.map((c) => `<button data-tab="${c}" class="${tab === c ? "on" : ""}">${c}</button>`).join("")}
-    </div>
-    <div id="tabbody"></div>`;
-  main.querySelectorAll("[data-tab]").forEach((b) => {
-    b.onclick = () => {
-      const t = b.getAttribute("data-tab");
-      location.hash = t === "chat" ? "#/playground" : `#/playground?tab=${t}`;
-    };
-  });
-  if (tab === "chat") renderChatTab(settings.defaultPolicy);
-  else renderToolTab(tab);
-}
-function routingFields() {
-  return `<div class="formgrid">
-    <div><label>Provider pin (optional)</label><input name="provider" size="14" placeholder="groq"></div>
-    <div><label>Policy</label><select name="policy"><option value="">(router default)</option>${policyOptions("")}</select></div>
-  </div>`;
-}
-function renderChatTab(defaultPolicy) {
-  const body = document.getElementById("tabbody");
-  body.innerHTML = `<form id="chatform">
-      <div class="formgrid">
-        <div style="grid-column:1/-1"><label>Model (canonical or provider::model)</label><input name="model" required value="nvidia/nemotron-3-super-120b-a12b"></div>
-      </div>
-      ${routingFields()}
-      <div><label style="margin-bottom:8px"><input type="checkbox" name="stream"> stream (SSE)</label></div>
-      <div style="margin:10px 0"><label class="muted" style="display:block;margin-bottom:6px">User message</label>
-      <textarea name="message" rows="3">Reply with exactly: router alive</textarea></div>
-      <button class="primary">Send</button>
-      <span class="muted">default policy: ${esc(defaultPolicy)}</span>
-    </form>
-    <div id="chatout" style="margin-top:14px"></div>`;
-  document.getElementById("chatform").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    const out = document.getElementById("chatout");
-    const t0 = Date.now();
-    const payload = {
-      model: String(f.get("model")),
-      messages: [{ role: "user", content: String(f.get("message")) }],
-      max_tokens: 300,
-    };
-    const routing = {};
-    if (f.get("provider")) routing.provider = String(f.get("provider"));
-    if (f.get("policy")) routing.policy = String(f.get("policy"));
-    if (Object.keys(routing).length) payload.routing = routing;
-    if (f.get("stream")) return runChatStream(payload, out, t0);
-    out.innerHTML = "<p class='muted'>Sending…</p>";
+const Router = {
+  async navigate() {
+    const hash = location.hash || "#/overview";
+    const path = hash.slice(1).split("?")[0];
+    const query = hash.includes("?") ? hash.slice(hash.indexOf("?") + 1) : "";
+    const fn = ROUTES[path] || renderOverview;
+    if (D.pt) D.pt.textContent = CFG.TITLES[path] || "Overview";
+    document.querySelectorAll(".nav-item").forEach((a) => {
+      a.classList.toggle("active", a.getAttribute("data-page") === path.slice(1));
+    });
+    D.sbn.classList.remove("open");
+    D.ms.classList.add("hidden");
+    if (D.pc) D.pc.innerHTML = skeleton();
     try {
-      const res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error?.message || `HTTP ${res.status}`);
-      out.innerHTML = `<p>${pill("via " + res.headers.get("x-router-via"), "ok")} ${pill("policy " + res.headers.get("x-router-policy"), "dim")} ${pill(res.headers.get("x-router-attempts") + " attempt(s)", "dim")} ${pill(Date.now() - t0 + "ms", "dim")}</p>
-        <pre class="dump">${esc(j.choices?.[0]?.message?.content ?? JSON.stringify(j, null, 2))}</pre>
-        <p class="muted mono">usage: ${esc(JSON.stringify(j.usage || {}))}</p>`;
+      await fn(new URLSearchParams(query || ""));
     } catch (err) {
-      out.innerHTML = `<p>${pill("failed", "bad")} ${esc(err.message)}</p>`;
-    }
-  };
-}
-async function runChatStream(payload, out, t0) {
-  payload.stream = true;
-  out.innerHTML = `<div class="streamout" id="live"></div><p class="muted" id="livemeta">connecting…</p>`;
-  const live = document.getElementById("live"), meta = document.getElementById("livemeta");
-  try {
-    const res = await fetch("/v1/chat/completions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-    if (!res.ok || !res.body) {
-      const j = await res.json().catch(() => ({}));
-      throw new Error(j?.error?.message || `HTTP ${res.status}`);
-    }
-    const via = res.headers.get("x-router-via"), att = res.headers.get("x-router-attempts");
-    meta.textContent = `via ${via} · ${att} attempt(s) · streaming…`;
-    const reader = res.body.getReader();
-    const dec = new TextDecoder();
-    let buf = "", text = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const parts = buf.split("\n\n");
-      buf = parts.pop() || "";
-      for (const part of parts) {
-        for (const line of part.split("\n")) {
-          const t = line.trim();
-          if (!t.startsWith("data:")) continue;
-          const chunk = t.slice(5).trim();
-          if (chunk === "[DONE]") continue;
-          try {
-            const j = JSON.parse(chunk);
-            const delta = j.choices?.[0]?.delta?.content || "";
-            if (delta) { text += delta; live.textContent = text; }
-          } catch { /* keep-alive */ }
-        }
+      if (D.pc) {
+        D.pc.innerHTML =
+          "<h1>Something went wrong</h1>" +
+          '<div class="empty-state"><p>' +
+          esc(err.message) +
+          '</p><p><button class="btn btn-secondary" id="retryBtn">Retry</button></p></div>';
+        const rb = document.getElementById("retryBtn");
+        if (rb) rb.addEventListener("click", () => Router.navigate());
       }
     }
-    meta.textContent = `via ${via} · ${att} attempt(s) · done in ${Date.now() - t0}ms`;
-  } catch (err) {
-    meta.textContent = "failed: " + err.message;
-  }
-}
-function renderToolTab(cap) {
-  const body = document.getElementById("tabbody");
-  const fields = {
-    search: `<div><label>Query</label><input name="query" required placeholder="latest nemotron news"></div>
-             <div><label>Max results</label><input name="maxResults" type="number" value="5" style="width:90px"></div>`,
-    scrape: `<div style="grid-column:1/-1"><label>URL</label><input name="url" required size="50" placeholder="https://example.com"></div>
-             <div><label>Max chars</label><input name="maxChars" type="number" value="8000" style="width:100px"></div>`,
-    extract: `<div style="grid-column:1/-1"><label>URLs (one per line, up to 20)</label><textarea name="urls" rows="3" placeholder="https://example.com"></textarea></div>
-              <div style="grid-column:1/-1"><label>Query (optional)</label><input name="query" placeholder="what is this page about?"></div>`,
-    crawl: `<div style="grid-column:1/-1"><label>URL</label><input name="url" required size="50" placeholder="https://example.com"></div>
-            <div><label>Page limit</label><input name="limit" type="number" value="10" style="width:90px"></div>`,
-    map: `<div style="grid-column:1/-1"><label>URL</label><input name="url" required size="50" placeholder="https://example.com"></div>
-          <div><label>Link limit</label><input name="limit" type="number" value="50" style="width:90px"></div>`,
-  }[cap];
-  body.innerHTML = `<form id="toolform"><div class="formgrid">${fields}</div>${routingFields()}
-    <button class="primary">Run ${esc(cap)}</button></form><div id="toolout" style="margin-top:14px"></div>`;
-  document.getElementById("toolform").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    const out = document.getElementById("toolout");
-    const payload = {};
-    if (cap === "search") { payload.query = String(f.get("query")); payload.maxResults = Number(f.get("maxResults") || 5); }
-    if (cap === "scrape") { payload.url = String(f.get("url")); if (f.get("maxChars")) payload.maxChars = Number(f.get("maxChars")); }
-    if (cap === "extract") {
-      payload.urls = String(f.get("urls")).split("\n").map((s) => s.trim()).filter(Boolean).slice(0, 20);
-      if (f.get("query")) payload.query = String(f.get("query"));
-    }
-    if (cap === "crawl" || cap === "map") { payload.url = String(f.get("url")); if (f.get("limit")) payload.limit = Number(f.get("limit")); }
-    const routing = {};
-    if (f.get("provider")) routing.provider = String(f.get("provider"));
-    if (f.get("policy")) routing.policy = String(f.get("policy"));
-    if (Object.keys(routing).length) payload.routing = routing;
-    out.innerHTML = "<p class='muted'>Running…</p>";
-    try {
-      const res = await fetch(`/v1/tools/${cap}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error?.message || `HTTP ${res.status}`);
-      out.innerHTML = `<p>${pill("via " + res.headers.get("x-router-via"), "ok")} ${pill(res.headers.get("x-router-attempts") + " attempt(s)", "dim")}</p>` + toolResultHtml(cap, j);
-    } catch (err) {
-      out.innerHTML = `<p>${pill("failed", "bad")} ${esc(err.message)}</p>`;
-    }
-  };
-}
-function toolResultHtml(cap, j) {
-  if (cap === "search") {
-    return (j.results || []).map((r) => `<div class="searchres"><div class="t">${esc(r.title || r.url)}</div><div class="u">${esc(r.url)}</div><div class="s">${esc((r.snippet || r.markdown || "").slice(0, 400))}</div></div>`).join("")
-      || `<pre class="dump">${esc(JSON.stringify(j, null, 2))}</pre>`;
-  }
-  if (cap === "scrape") return `<pre class="dump">${esc(j.markdown || JSON.stringify(j, null, 2))}</pre>`;
-  if (cap === "extract") {
-    return (j.results || []).map((r) => `<div class="searchres"><div class="t">${esc(r.title || r.url)}</div><div class="u">${esc(r.url)}</div>${r.error ? `<div>${pill("error: " + r.error, "bad")}</div>` : `<div class="s">${esc((r.content || "").slice(0, 500))}</div>`}</div>`).join("");
-  }
-  if (cap === "crawl") {
-    return (j.pages || []).map((p) => `<div class="searchres"><div class="t">${esc(p.title || p.url)}</div><div class="u">${esc(p.url)}</div><div class="s">${esc((p.markdown || "").slice(0, 300))}</div></div>`).join("")
-      || `<pre class="dump">${esc(JSON.stringify(j, null, 2))}</pre>`;
-  }
-  return `<div class="panel"><h3>${(j.links || []).length} links</h3>${(j.links || []).map((l) => `<div class="mono" style="padding:2px 0">${esc(l.url || l)}</div>`).join("")}</div>`;
-}
-
-/* ---------------- resources ---------------- */
-async function renderResources(q) {
-  const id = q.get("id");
-  if (id) return renderResourceDetail(id, q.get("cap") || "llm.chat");
-  const resources = await api("GET", "/api/resources");
-  const filter = (q.get("q") || "").toLowerCase();
-  const capFilter = q.get("cap") || "";
-  const rows = resources.filter((r) =>
-    (!filter || r.id.toLowerCase().includes(filter) || (r.displayName || "").toLowerCase().includes(filter)) &&
-    (!capFilter || (r.capabilities || []).includes(capFilter)));
-  // One batched count request — never one /api/routes call per row.
-  let counts = {};
-  try {
-    counts = await api("GET", `/api/routes/counts${capFilter ? `?capability=${encodeURIComponent(capFilter)}` : ""}`);
-  } catch { /* list still renders without counts */ }
-  main.innerHTML = `<h1>Resources <span class="muted">(${resources.length})</span></h1>
-    <p class="sub">Canonical resources — what clients ask for. Routes decide where they are served from.</p>
-    <form class="inline" id="resfilter">
-      <label>Search<input id="resq" value="${esc(q.get("q") || "")}" placeholder="nemotron…"></label>
-      <label>Capability<select id="rescap"><option value="">all</option>${CAPABILITIES.map((c) => `<option value="${c}"${c === capFilter ? " selected" : ""}>${c}</option>`).join("")}</select></label>
-      <button>Filter</button>
-    </form>
-    ${table(["canonical id", "kind", "capabilities", "routes"],
-      rows.slice(0, 300).map((r) => `<tr>
-        <td><a class="mono" href="#/resources?id=${encodeURIComponent(r.id)}">${esc(shortRes(r.id))}</a></td>
-        <td>${esc(r.kind)}</td><td class="mono muted">${esc((r.capabilities || []).join(" · "))}</td>
-        <td class="num">${counts[r.id] ?? "<span class='muted'>—</span>"}</td></tr>`),
-      "No resources match this filter.")}
-    ${rows.length > 300 ? `<p class="muted">showing 300 of ${rows.length} — refine the search.</p>` : ""}
-    <h2>Add canonical resource</h2>
-    <form class="inline" id="addres">
-      <label>ID<input name="id" required placeholder="llm:model:my-model" size="30"></label>
-      <label>Display name<input name="displayName" required></label>
-      <label>Kind<select name="kind"><option value="llm_model">llm_model</option><option value="capability">capability</option></select></label>
-      <button>Add</button>
-    </form>`;
-  document.getElementById("resfilter").onsubmit = (e) => {
-    e.preventDefault();
-    const qq = document.getElementById("resq").value;
-    const cc = document.getElementById("rescap").value;
-    location.hash = `#/resources?q=${encodeURIComponent(qq)}${cc ? `&cap=${encodeURIComponent(cc)}` : ""}`;
-  };
-  document.getElementById("addres").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api("POST", "/api/resources", {
-      id: String(f.get("id")), displayName: String(f.get("displayName")), kind: String(f.get("kind")), capabilities: ["llm.chat"],
-    });
-    showToast("Resource added"); router();
-  };
-}
-async function renderResourceDetail(id, cap) {
-  const [mappings, providers] = await Promise.all([
-    api("GET", `/api/provider-resources?resource=${encodeURIComponent(id)}`),
-    api("GET", "/api/providers"),
-  ]);
-  const caps = [...new Set(mappings.flatMap((m) => m.capabilities || []))];
-  if (!caps.includes(cap)) cap = caps[0] || "llm.chat";
-  const expanded = await api("GET", `/api/routes?resource=${encodeURIComponent(id)}&capability=${encodeURIComponent(cap)}`);
-  const byPr = {};
-  expanded.forEach((r) => { (byPr[r.providerResourceId] = byPr[r.providerResourceId] || []).push(r); });
-  main.innerHTML = `<h1 class="mono">${esc(shortRes(id))}</h1>
-    <p class="sub">${esc(id)} · ${expanded.length} executable routes · <span class="mono">${esc(cap)}</span></p>
-    <div class="row">
-      <button class="ghost small" id="backres">← all resources</button>
-      <select id="detailcap" title="Capability">${caps.map((c) => `<option value="${esc(c)}"${c === cap ? " selected" : ""}>${esc(c)}</option>`).join("")}</select>
-      <button class="danger small" id="delres">Delete resource</button>
-    </div>
-    ${mappings.map((m) => {
-      const routes = (byPr[m.id] || []).filter((r) => (r.credentialId));
-      return `<div class="panel"><h3>${esc(m.providerId)} → <span class="mono">${esc(m.upstreamId)}</span>
-        ${m.enabled ? pill("enabled", "ok") : pill("disabled", "warn")}</h3>
-        <div class="row">
-          <button class="small ghost" data-mapping="${esc(m.id)}" data-to="${m.enabled ? "false" : "true"}">${m.enabled ? "Disable" : "Enable"}</button>
-          <button class="small danger" data-delmapping="${esc(m.id)}">Delete mapping</button>
-        </div>
-        ${routes.length ? table(["account", "credential", "quota", "reset in", "health", "latency"],
-          routes.map((r) => {
-            const qq = (r.quotas || [])[0];
-            return `<tr><td class="mono">${esc(r.accountId)}</td><td class="mono">${esc(r.credentialId)}</td>
-              <td>${quotaBar(qq)}<div class="muted mono" style="font-size:11px">${qq ? esc(qq.metric) : ""}</div></td>
-              <td>${qq ? countdown(qq.resetAt) : "—"}</td>
-              <td>${healthCell(r.health)}</td>
-              <td class="num">${r.health?.latencyEmaMs != null ? Math.round(r.health.latencyEmaMs) + "ms" : "—"}</td></tr>`;
-          })) : "<p class='muted'>No credentials under this provider — add keys to create routes.</p>"}</div>`;
-    }).join("")}
-    <h2>Add provider mapping</h2>
-    <form class="inline" id="addmap">
-      <label>Provider<select name="providerId">${providers.map((p) => `<option>${esc(p.id)}</option>`).join("")}</select></label>
-      <label>Upstream ID<input name="upstreamId" required size="28" placeholder="vendor/model-id"></label>
-      <button>Map</button>
-    </form>
-    <h2>Simulate routing <span class="count">ranked candidates for this resource</span></h2>
-    <form class="inline" id="simform">
-      <label>Policy<select name="policy">${policyOptions("burn")}</select></label>
-      <label>Provider pin<input name="provider" size="12" placeholder="(none)"></label>
-      <button>Rank</button>
-    </form>
-    <div id="simout"></div>`;
-  document.getElementById("backres").onclick = () => { location.hash = "#/resources"; };
-  document.getElementById("detailcap").onchange = (e) => {
-    location.hash = `#/resources?id=${encodeURIComponent(id)}&cap=${encodeURIComponent(e.target.value)}`;
-  };
-  document.getElementById("delres").onclick = async () => {
-    if (!confirm(`Delete resource ${id} and all its mappings?`)) return;
-    await api("DELETE", `/api/resources/${encodeURIComponent(id)}`);
-    showToast("Resource deleted"); location.hash = "#/resources";
-  };
-  main.querySelectorAll("[data-mapping]").forEach((b) => {
-    b.onclick = async () => {
-      await api("PATCH", `/api/provider-resources/${encodeURIComponent(b.getAttribute("data-mapping"))}`, { enabled: b.getAttribute("data-to") === "true" });
-      showToast(b.getAttribute("data-to") === "true" ? "Mapping enabled" : "Mapping disabled"); router();
-    };
-  });
-  main.querySelectorAll("[data-delmapping]").forEach((b) => {
-    b.onclick = async () => {
-      if (!confirm("Delete this provider mapping?")) return;
-      await api("DELETE", `/api/provider-resources/${encodeURIComponent(b.getAttribute("data-delmapping"))}`);
-      showToast("Mapping deleted"); router();
-    };
-  });
-  document.getElementById("addmap").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api("POST", "/api/provider-resources", {
-      resourceId: id, providerId: String(f.get("providerId")), upstreamId: String(f.get("upstreamId")), capabilities: [cap],
-    });
-    showToast("Mapping added"); router();
-  };
-  document.getElementById("simform").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    const out = document.getElementById("simout");
-    out.innerHTML = "<p class='muted'>Ranking…</p>";
-    const d = await api("POST", "/api/routing/simulate", {
-      resource: id, capability: cap, policy: String(f.get("policy")),
-      provider: String(f.get("provider")) || undefined,
-    });
-    out.innerHTML = `<h2>Eligible <span class="count">(${d.eligible.length}, policy ${esc(d.policy)})</span></h2>
-      ${table(["#", "route", "score", "reason"],
-        d.eligible.slice(0, 25).map((r, i) => `<tr><td class="num">${i + 1}</td>
-          <td class="mono">${esc(r.provider)} / ${esc(r.account)}<br><span class="muted">${esc(r.upstream)}</span></td>
-          <td class="num">${r.score.toFixed(3)}</td><td>${esc(r.reason)}</td></tr>`),
-        "No eligible routes — see filtered list below.")}
-      ${d.filtered.length ? `<h2>Filtered out <span class="count">(${d.filtered.length})</span></h2>
-      ${table(["route", "reason"],
-        d.filtered.slice(0, 25).map((r) => `<tr><td class="mono">${esc(r.provider)} / ${esc(r.account)}</td><td>${esc(r.reason)}</td></tr>`))}` : ""}`;
-  };
-}
-
-/* ---------------- providers & keys ---------------- */
-async function renderProviders(q) {
-  const id = q.get("id");
-  if (id) return renderProviderDetail(id);
-  const providers = await api("GET", "/api/providers");
-  const filter = (q.get("q") || "").toLowerCase();
-  const rows = providers.filter((p) => !filter || p.id.includes(filter) || (p.displayName || "").toLowerCase().includes(filter));
-  const clientBase = location.origin + "/v1";
-  const clientChat = location.origin + "/v1/chat/completions";
-  const token = getToken();
-
-  main.innerHTML = `<h1>Providers &amp; Keys <span class="muted">(${providers.length})</span></h1>
-    <p class="sub">Each upstream provider owns accounts and API keys. The router automatically rotates keys and handles fallback.</p>
-
-    <div class="connect-banner">
-      <h3><span>⚡</span> Client Connection Guide</h3>
-      <p>Point any OpenAI-compatible client (Cursor, Continue, LibreChat, OpenAI SDK, LangChain, etc.) to this router:</p>
-      <div class="connect-grid">
-        <div class="connect-box">
-          <span class="connect-label">OpenAI Base URL</span>
-          <div class="connect-val">
-            <span class="mono">${esc(clientBase)}</span>
-            <button class="copybtn" data-copy="${esc(clientBase)}" title="Copy Base URL">copy</button>
-          </div>
-        </div>
-        <div class="connect-box">
-          <span class="connect-label">Chat Completions Endpoint</span>
-          <div class="connect-val">
-            <span class="mono">${esc(clientChat)}</span>
-            <button class="copybtn" data-copy="${esc(clientChat)}" title="Copy Chat Endpoint">copy</button>
-          </div>
-        </div>
-        <div class="connect-box">
-          <span class="connect-label">API Key / Auth Header</span>
-          <div class="connect-val">
-            <span class="mono">${token ? esc(token.slice(0, 10)) + "•••••" : "Bearer (optional in local dev)"}</span>
-            ${token ? `<button class="copybtn" data-copy="${esc(token)}" title="Copy Admin Token">copy</button>` : `<button class="copybtn" data-open-token title="Set Token">set</button>`}
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <form class="inline" id="provfilter">
-      <label>Search<input value="${esc(q.get("q") || "")}" id="provq" placeholder="groq…"></label>
-      <button>Filter</button>
-    </form>
-    ${table(["provider", "upstream base URL", "state", "priority", ""],
-      rows.map((p) => `<tr>
-        <td><a href="#/providers?id=${esc(p.id)}"><b>${esc(p.id)}</b></a><br><span class="muted">${esc(p.displayName)}</span></td>
-        <td class="mono muted">${esc(p.baseUrl || "—")}</td>
-        <td>${p.enabled ? pill("enabled", "ok") : pill("disabled", "warn")}</td>
-        <td class="num">${p.priority}</td>
-        <td><button class="small ghost" data-provider="${esc(p.id)}" data-to="${p.enabled ? "false" : "true"}">${p.enabled ? "Disable" : "Enable"}</button></td>
-      </tr>`), "No providers match.")}`;
-  document.getElementById("provfilter").onsubmit = (e) => {
-    e.preventDefault();
-    location.hash = "#/providers?q=" + encodeURIComponent(document.getElementById("provq").value);
-  };
-  main.querySelectorAll("[data-provider]").forEach((b) => {
-    b.onclick = async () => {
-      await api("PATCH", `/api/providers/${encodeURIComponent(b.getAttribute("data-provider"))}`, { enabled: b.getAttribute("data-to") === "true" });
-      showToast(b.getAttribute("data-to") === "true" ? "Provider enabled" : "Provider disabled"); router();
-    };
-  });
-}
-async function renderProviderDetail(id) {
-  const [providers, accounts, creds] = await Promise.all([
-    api("GET", "/api/providers"),
-    api("GET", `/api/accounts?provider=${encodeURIComponent(id)}`),
-    api("GET", "/api/credentials"),
-  ]);
-  const p = providers.find((x) => x.id === id);
-  if (!p) { main.innerHTML = "<h1>Unknown provider</h1>"; return; }
-  const mine = creds.filter((c) => c.providerId === id);
-  const byAccount = {};
-  mine.forEach((c) => { (byAccount[c.accountId] = byAccount[c.accountId] || []).push(c); });
-  main.innerHTML = `<h1>${esc(p.id)}</h1>
-    <p class="sub">${esc(p.displayName)} · ${accounts.length} accounts · ${mine.length} keys</p>
-    <div class="row">
-      <button class="ghost small" id="backprov">← all providers</button>
-      <button class="danger small" id="delprov">Delete provider</button>
-    </div>
-    <h2>Config</h2>
-    <form class="inline" id="saveprov">
-      <label>Display name<input name="displayName" value="${esc(p.displayName)}"></label>
-      <label>Base URL<input name="baseUrl" size="42" value="${esc(p.baseUrl || "")}"></label>
-      <label>Priority<input name="priority" type="number" value="${p.priority}" style="width:80px"></label>
-      <label>Enabled<select name="enabled"><option value="true"${p.enabled ? " selected" : ""}>on</option><option value="false"${!p.enabled ? " selected" : ""}>off</option></select></label>
-      <button>Save</button>
-    </form>
-    <h2>Accounts &amp; keys <span class="count">(${accounts.length} accounts)</span></h2>
-    <div class="row"><button class="small ghost" id="valall">Validate all stale keys</button></div>
-    <div id="jobout"></div>
-    <div class="tree" style="margin-top:10px">
-      ${accounts.map((a) => `<div class="tree-node">
-        <div class="tree-head">
-          <span class="name mono">${esc(a.id)}</span>
-          ${a.enabled ? pill("on", "ok") : pill("off", "warn")}
-          <span class="muted">${esc(a.displayName || "")}</span>
-          <span class="grow"></span>
-          <span class="muted">${(byAccount[a.id] || []).length} keys</span>
-          <button class="small danger" data-delaccount="${esc(a.id)}">Delete</button>
-        </div>
-        <div class="tree-children">
-          ${(byAccount[a.id] || []).length
-            ? table(["credential", "label", "status", "validated", ""], [keyRows(byAccount[a.id] || [])])
-            : "<p class='muted'>No keys on this account.</p>"}
-        </div>
-      </div>`).join("") || "<div class='empty'>No accounts yet.</div>"}
-    </div>
-    <h2>Add account</h2>
-    <form class="inline" id="addacct">
-      <label>Account ID<input name="id" required placeholder="${esc(id)}-main"></label>
-      <label>Display<input name="displayName"></label>
-      <button>Add account</button>
-    </form>
-    <h2>Add key</h2>
-    <form class="inline" id="addcred">
-      <label>Account<select name="accountId">${accounts.map((a) => `<option>${esc(a.id)}</option>`).join("")}</select></label>
-      <label>Label<input name="label" placeholder="main"></label>
-      <label>Secret<input name="secret" required type="password" size="34" autocomplete="off"></label>
-      <button>Add key</button>
-    </form>
-    <p class="muted">Secrets are encrypted at rest and never returned by the API.</p>`;
-  document.getElementById("backprov").onclick = () => { location.hash = "#/providers"; };
-  document.getElementById("delprov").onclick = async () => {
-    if (!confirm(`Delete provider ${id} + ALL its accounts, keys and mappings?`)) return;
-    await api("DELETE", `/api/providers/${encodeURIComponent(id)}`);
-    showToast("Provider deleted"); location.hash = "#/providers";
-  };
-  document.getElementById("saveprov").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api("PATCH", `/api/providers/${encodeURIComponent(id)}`, {
-      displayName: String(f.get("displayName")), baseUrl: String(f.get("baseUrl")) || null,
-      priority: Number(f.get("priority")), enabled: String(f.get("enabled")) === "true",
-    });
-    showToast("Provider saved"); router();
-  };
-  main.querySelectorAll("[data-delaccount]").forEach((b) => {
-    b.onclick = async () => {
-      if (!confirm(`Delete account ${b.getAttribute("data-delaccount")} + its keys?`)) return;
-      await api("DELETE", `/api/accounts/${encodeURIComponent(b.getAttribute("data-delaccount"))}`);
-      showToast("Account deleted"); router();
-    };
-  });
-  document.getElementById("valall").onclick = async () => {
-    const out = document.getElementById("jobout");
-    out.innerHTML = "<p class='muted'>Validating stale keys (staggered)…</p>";
-    try {
-      const s = await api("POST", "/api/maintenance/validate", { provider: id, limit: 50 });
-      out.innerHTML = `<p>${pill(s.ok + "/" + s.checked + " valid", s.invalid ? "warn" : "ok")} ${pill(s.skippedFresh + " fresh-skipped", "dim")}` +
-        (s.errors?.length ? ` — <span class="muted">${esc(s.errors.slice(0, 3).map((e) => e.credential).join(", "))}${s.errors.length > 3 ? "…" : ""}</span>` : "") + `</p>`;
-      showToast(`Validation: ${s.ok} ok, ${s.invalid} invalid`);
-    } catch (e2) { out.innerHTML = `<p>${pill("job failed", "bad")} ${esc(e2.message)}</p>`; }
-  };
-  const addAcct = document.getElementById("addacct");
-  if (addAcct) addAcct.onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api("POST", "/api/accounts", { id: String(f.get("id")), providerId: id, displayName: String(f.get("displayName")) || null });
-    showToast("Account added"); router();
-  };
-  const addCred = document.getElementById("addcred");
-  if (addCred) addCred.onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api("POST", "/api/credentials", { accountId: String(f.get("accountId")), label: String(f.get("label")) || null, secret: String(f.get("secret")) });
-    showToast("Key stored (encrypted)"); router();
-  };
-}
-
-/* ---------------- quotas & usage ---------------- */
-async function renderQuotas(q) {
-  const [quotas, creds] = await Promise.all([api("GET", "/api/quotas"), api("GET", "/api/credentials")]);
-  const filter = (q.get("q") || "").toLowerCase();
-  const rows = quotas.filter((w) => !filter || w.credentialId.toLowerCase().includes(filter) || w.metric.toLowerCase().includes(filter));
-  main.innerHTML = `<h1>Quotas &amp; Usage <span class="muted">(${quotas.length} windows)</span></h1>
-    <p class="sub">Static windows are provider-reported; per-minute/hour and router-configured daily caps reset live from usage.</p>
-    <form class="inline" id="quotausage">
-      <label>Live usage — credential<input name="credentialId" required size="28" placeholder="cred-…" value="${esc(q.get("credential") || "")}"></label>
-      <button>Look up</button>
-    </form>
-    <div id="usageout"></div>
-    <form class="inline" id="quotafilter">
-      <label>Filter<input id="quotaq" value="${esc(q.get("q") || "")}" placeholder="credential / metric"></label>
-      <button>Filter</button>
-    </form>
-    ${table(["credential", "metric", "used / limit", "left", "window", "reset in", "hard", "source", ""],
-      rows.slice(0, 300).map((w) => `<tr><td class="mono">${esc(w.credentialId)}</td><td>${esc(w.metric)}</td>
-        <td class="mono num">${esc(w.usedValue)}/${esc(w.limitValue)}</td><td>${quotaBar(w)}</td>
-        <td>${esc(w.windowKind)}</td><td>${countdown(w.resetAt)}</td>
-        <td>${w.hard ? "yes" : "no"}</td><td>${esc(w.source)}</td>
-        <td><button class="small danger" data-delquota="${esc(w.id)}">Delete</button></td></tr>`),
-      "No quota windows configured.")}
-    ${rows.length > 300 ? `<p class="muted">showing 300 of ${rows.length}</p>` : ""}
-    <h2>Add quota window</h2>
-    <form class="inline" id="addquota">
-      <label>Credential<select name="credentialId">${creds.filter((c) => c.status === "active").map((c) => `<option value="${esc(c.id)}">${esc(c.id)}</option>`).join("")}</select></label>
-      <label>Metric<select name="metric"><option>requests</option><option>total_tokens</option><option>input_tokens</option><option>output_tokens</option><option>credits</option><option>usd</option><option>searches</option><option>pages</option><option>crawl_units</option></select></label>
-      <label>Limit<input name="limitValue" type="number" value="1000" style="width:90px"></label>
-      <label>Used<input name="usedValue" type="number" value="0" style="width:90px"></label>
-      <label>Window<select name="windowKind"><option>calendar_day</option><option>calendar_month</option><option>calendar_week</option><option>calendar_hour</option><option>rolling_seconds</option><option>fixed</option></select></label>
-      <label>Reset at (ISO)<input name="resetAt" placeholder="2026-10-01T00:00:00Z" size="22"></label>
-      <label>Hard<select name="hard"><option value="true">yes</option><option value="false">no</option></select></label>
-      <button>Add</button>
-    </form>`;
-  document.getElementById("quotausage").onsubmit = async (e) => {
-    e.preventDefault();
-    const cid = String(new FormData(e.target).get("credentialId"));
-    const out = document.getElementById("usageout");
-    try {
-      const u = await api("GET", `/api/usage?credential=${encodeURIComponent(cid)}`);
-      out.innerHTML = `<div class="panel"><h3 class="mono">${esc(cid)}</h3>
-        <p>${pill("requests/24h: " + u.requests, "acc")} ${pill("tokens/24h: " + Number(u.total_tokens).toLocaleString(), "acc")} ${pill("searches: " + u.searches, "info")}</p>
-        <p class="muted mono">in ${u.input_tokens} / out ${u.output_tokens} · since ${esc(u.since)}</p></div>`;
-    } catch (err) { out.innerHTML = `<p>${pill("lookup failed", "bad")} ${esc(err.message)}</p>`; }
-  };
-  document.getElementById("quotafilter").onsubmit = (e) => {
-    e.preventDefault();
-    location.hash = "#/quotas?q=" + encodeURIComponent(document.getElementById("quotaq").value);
-  };
-  main.querySelectorAll("[data-delquota]").forEach((b) => {
-    b.onclick = async () => {
-      if (!confirm("Delete this quota window?")) return;
-      await api("DELETE", `/api/quotas/${encodeURIComponent(b.getAttribute("data-delquota"))}`);
-      showToast("Quota deleted"); router();
-    };
-  });
-  document.getElementById("addquota").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    await api("POST", "/api/quotas", {
-      credentialId: String(f.get("credentialId")), metric: String(f.get("metric")),
-      limitValue: Number(f.get("limitValue")), usedValue: Number(f.get("usedValue") || 0),
-      windowKind: String(f.get("windowKind")), resetAt: String(f.get("resetAt")) || null,
-      hard: String(f.get("hard")) === "true", source: "configured",
-    });
-    showToast("Quota added"); router();
-  };
-}
-
-/* ---------------- requests ---------------- */
-async function renderRequests(q) {
-  const id = q.get("id");
-  if (id) {
-    const l = await api("GET", `/api/requests/${encodeURIComponent(id)}`);
-    main.innerHTML = `<h1>Request</h1>
-      <p><button class="ghost small" id="backreq">← all requests</button></p>
-      <div class="panel"><dl class="kv">
-      ${Object.entries(l).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(typeof v === "object" ? JSON.stringify(v, null, 2) : (v ?? "—"))}</dd>`).join("")}
-      </dl></div>`;
-    document.getElementById("backreq").onclick = () => { location.hash = "#/requests"; };
-    return;
-  }
-  const logs = await api("GET", "/api/requests?limit=200");
-  const status = q.get("status") || "";
-  const pf = (q.get("provider") || "").toLowerCase();
-  const rows = logs.filter((l) =>
-    (!status || l.status === status) &&
-    (!pf || (l.selectedProviderId || "").toLowerCase().includes(pf)));
-  main.innerHTML = `<h1>Requests <span class="muted">(latest ${logs.length})</span></h1>
-    <form class="inline" id="reqfilter">
-      <label>Status<select id="reqstatus"><option value="">all</option><option${status === "success" ? " selected" : ""}>success</option><option${status === "error" ? " selected" : ""}>error</option></select></label>
-      <label>Provider<input id="reqprov" value="${esc(q.get("provider") || "")}" placeholder="groq…" size="14"></label>
-      <button>Filter</button>
-    </form>
-    ${reqTable(rows, "No requests match this filter.")}`;
-  document.getElementById("reqfilter").onsubmit = (e) => {
-    e.preventDefault();
-    const s = document.getElementById("reqstatus").value;
-    const p = document.getElementById("reqprov").value;
-    location.hash = `#/requests?status=${encodeURIComponent(s)}&provider=${encodeURIComponent(p)}`;
-  };
-}
-
-/* ---------------- settings modal ---------------- */
-async function openSettings() {
-  const s = await api("GET", "/api/settings").catch(() => ({ defaultPolicy: "auto" }));
-  const body = document.getElementById("settingsbody");
-  body.innerHTML = `
-    <h2 style="margin-top:0">Routing</h2>
-    <form class="inline" id="savesettings">
-      <label>Default policy<select name="defaultPolicy">${policyOptions(s.defaultPolicy)}</select></label>
-      <button>Save</button>
-    </form>
-    <p class="muted">Runtime setting — a server restart resets it to DEFAULT_POLICY from .env.</p>
-    <h2>Validation job</h2>
-    <form class="inline" id="runvalidate">
-      <label>Provider<input name="provider" size="14" placeholder="(all)"></label>
-      <label>Limit<input name="limit" type="number" value="25" style="width:80px"></label>
-      <button>Run</button>
-    </form>
-    <div id="valout"></div>
-    <h2>Admin token</h2>
-    <p class="muted">${getToken() ? "A token is stored in this browser (localStorage only)." : "No token stored."}</p>
-    <div class="row">
-      <button class="ghost" id="changetoken">Set / change token</button>
-      <button class="ghost" id="forgettoken">Forget token</button>
-    </div>`;
-  openOverlay("settingswrap");
-  document.getElementById("savesettings").onsubmit = async (e) => {
-    e.preventDefault();
-    const ns = await api("PATCH", "/api/settings", { defaultPolicy: String(new FormData(e.target).get("defaultPolicy")) });
-    showToast("Default policy → " + ns.defaultPolicy);
-    loadStatus();
-  };
-  document.getElementById("runvalidate").onsubmit = async (e) => {
-    e.preventDefault();
-    const f = new FormData(e.target);
-    const out = document.getElementById("valout");
-    out.innerHTML = "<p class='muted'>Validating (staggered)…</p>";
-    try {
-      const r = await api("POST", "/api/maintenance/validate", {
-        provider: String(f.get("provider")) || undefined, limit: Number(f.get("limit") || 25),
+    if (D.pc) D.pc.scrollTop = 0;
+    window.scrollTo(0, 0);
+  },
+  init() {
+    window.addEventListener("hashchange", () => this.navigate());
+    document.querySelectorAll(".nav-item").forEach((a) => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        location.hash = a.getAttribute("href");
       });
-      out.innerHTML = `<p>${pill(r.ok + "/" + r.checked + " valid", r.invalid ? "warn" : "ok")} ${pill(r.skippedFresh + " fresh-skipped", "dim")}</p>`;
-    } catch (err) { out.innerHTML = `<p>${pill("job failed", "bad")} ${esc(err.message)}</p>`; }
-  };
-  document.getElementById("changetoken").onclick = () => {
-    closeOverlay("settingswrap");
-    openOverlay("tokenbar");
-    document.getElementById("tokeninput").value = getToken();
-    document.getElementById("tokeninput").focus();
-  };
-  document.getElementById("forgettoken").onclick = () => {
-    localStorage.removeItem("router-admin-token");
-    location.reload();
-  };
+    });
+    this.navigate();
+  },
+};
+
+/* ============================================================
+   Settings modal
+   ============================================================ */
+
+const SettingsModal = {
+  async open() {
+    const s = await Api.get("/api/settings").catch(() => ({
+      defaultPolicy: "auto",
+    }));
+    D.sb.innerHTML =
+      '<div class="section flush"><h2 class="section-title">Routing</h2>' +
+      '<form class="inline-form" id="saveSettings"><label>Default policy<select name="defaultPolicy">' +
+      policyOptions(s.defaultPolicy) +
+      "</select></label>" +
+      '<button type="submit" class="btn btn-primary">Save</button></form>' +
+      '<p class="text-muted">Runtime setting — a restart resets it to DEFAULT_POLICY.</p></div>' +
+      '<div class="section"><h2 class="section-title">Validation job</h2>' +
+      '<form class="inline-form" id="runValidate"><label>Provider' +
+      '<input name="provider" size="14" placeholder="(all)"></label>' +
+      '<label>Limit<input name="limit" type="number" value="25" class="narrow"></label>' +
+      '<button type="submit" class="btn btn-secondary">Run</button></form><div id="valOut"></div></div>';
+    openModal("settingsModal");
+    document.getElementById("saveSettings").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const next = await Api.patch("/api/settings", {
+        defaultPolicy: String(new FormData(e.target).get("defaultPolicy")),
+      });
+      Toast.ok("Default policy → " + next.defaultPolicy);
+      Health.check();
+    });
+    document.getElementById("runValidate").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const f = new FormData(e.target);
+      const out = document.getElementById("valOut");
+      out.innerHTML = "<p class='text-muted'>Validating…</p>";
+      try {
+        const r = await Api.post("/api/maintenance/validate", {
+          provider: String(f.get("provider")) || undefined,
+          limit: Number(f.get("limit") || 25),
+        });
+        out.innerHTML =
+          "<p>" +
+          badge(r.ok + "/" + r.checked + " valid", r.invalid ? "warning" : "success") +
+          " " +
+          badge(r.skippedFresh + " fresh-skipped", "secondary") +
+          "</p>";
+      } catch (err) {
+        out.innerHTML = "<p>" + pill("job failed", "bad") + " " + esc(err.message) + "</p>";
+      }
+    });
+  },
+};
+
+/* ============================================================
+   Global events
+   ============================================================ */
+
+function initEvents() {
+  D.os.addEventListener("click", () => SettingsModal.open());
+  D.sc.addEventListener("click", () => closeModal("settingsModal"));
+  D.sm.addEventListener("click", (e) => {
+    if (e.target.id === "settingsModal") closeModal("settingsModal");
+  });
+  D.mt.addEventListener("click", () => {
+    D.sbn.classList.toggle("open");
+    D.ms.classList.toggle("hidden");
+  });
+  D.ms.addEventListener("click", () => {
+    D.sbn.classList.remove("open");
+    D.ms.classList.add("hidden");
+  });
+  D.rb.addEventListener("click", () => {
+    Health.check();
+    Router.navigate();
+    Toast.ok("Refreshed");
+  });
+  document.addEventListener("click", (e) => {
+    const cp = e.target.closest("[data-copy]");
+    if (cp) {
+      const v = cp.getAttribute("data-copy");
+      if (navigator.clipboard) {
+        navigator.clipboard.writeText(v).then(
+          () => Toast.ok("Copied"),
+          () => Toast.err("Copy failed"),
+        );
+      }
+      return;
+    }
+    const vs = e.target.closest("[data-validate-cred]");
+    if (vs) {
+      const credId = vs.getAttribute("data-validate-cred");
+      Toast.show("Probing…");
+      Api.post("/api/credentials/" + encodeURIComponent(credId) + "/validate")
+        .then((r) =>
+          Toast.show(
+            r.ok
+              ? "Valid — " + (r.message || "accepted")
+              : "Invalid — " + (r.message || "rejected"),
+            r.ok ? "success" : "error",
+          ),
+        )
+        .catch((err) => Toast.err("Validation failed: " + err.message))
+        .finally(() => Router.navigate());
+      return;
+    }
+    const cs = e.target.closest("[data-cred-status]");
+    if (cs) {
+      const credId = cs.getAttribute("data-cred-status");
+      const to = cs.getAttribute("data-to");
+      Api.patch("/api/credentials/" + encodeURIComponent(credId), { status: to })
+        .then(() => {
+          Toast.ok("Credential " + to);
+          Router.navigate();
+        })
+        .catch((err) => Toast.err("Failed: " + err.message));
+      return;
+    }
+    const dc = e.target.closest("[data-del-cred]");
+    if (dc) {
+      const credId = dc.getAttribute("data-del-cred");
+      if (!window.confirm("Delete key " + credId + "? Quotas and health go with it.")) return;
+      Api.del("/api/credentials/" + encodeURIComponent(credId))
+        .then(() => {
+          Toast.ok("Key deleted");
+          Router.navigate();
+        })
+        .catch((err) => Toast.err("Failed: " + err.message));
+    }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeModal("settingsModal");
+    }
+  });
+  setInterval(() => Health.check(), 30000);
 }
 
-loadStatus();
-router();
+/* ============================================================
+   Boot
+   ============================================================ */
+
+async function boot() {
+  await Health.check();
+  initEvents();
+  Router.init();
+}
+
+boot();

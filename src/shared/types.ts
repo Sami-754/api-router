@@ -114,11 +114,7 @@ export type QuotaWindowKind =
   | "fixed";
 
 export type QuotaSource =
-  | "provider_api"
-  | "response_headers"
-  | "configured"
-  | "learned"
-  | "estimated";
+  "provider_api" | "response_headers" | "configured" | "learned" | "estimated";
 
 export interface QuotaWindow {
   id: string;
@@ -202,13 +198,7 @@ export interface RequestLog {
 }
 
 export type RoutingPolicyName =
-  | "auto"
-  | "burn"
-  | "preserve"
-  | "fast"
-  | "reliable"
-  | "cheap"
-  | "priority";
+  "auto" | "burn" | "preserve" | "fast" | "reliable" | "cheap" | "priority";
 
 export interface RoutingHint {
   provider?: string | null;

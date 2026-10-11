@@ -12,7 +12,13 @@ import { encryptSecret } from "../src/shared/crypto.js";
 
 process.env.MASTER_KEY ??= "test-master-key-0123456789abcdef0123456789";
 
-const CAPS = ["web.search", "web.scrape", "web.extract", "web.crawl", "web.map"] as const;
+const CAPS = [
+  "web.search",
+  "web.scrape",
+  "web.extract",
+  "web.crawl",
+  "web.map",
+] as const;
 
 function toolFetch(): typeof fetch {
   return (async (url, init) => {
@@ -24,43 +30,116 @@ function toolFetch(): typeof fetch {
     // ---- exa ----
     if (u.includes("exa")) {
       if (u.endsWith("/search")) {
-        return hit({ results: [{ title: "Exa hit", url: "https://exa.example/a", text: "exa snippet", score: 0.9 }] });
+        return hit({
+          results: [
+            {
+              title: "Exa hit",
+              url: "https://exa.example/a",
+              text: "exa snippet",
+              score: 0.9,
+            },
+          ],
+        });
       }
       if (u.endsWith("/contents")) {
-        return hit({ results: [{ url: "https://exa.example/a", title: "Exa page", text: "# hello exa" }] });
+        return hit({
+          results: [
+            {
+              url: "https://exa.example/a",
+              title: "Exa page",
+              text: "# hello exa",
+            },
+          ],
+        });
       }
     }
     // ---- tavily ----
     if (u.includes("tavily")) {
       if (u.endsWith("/search")) {
-        return hit({ results: [{ title: "Tavily hit", url: "https://tavily.example/b", content: "tavily snippet", score: 0.8 }] });
+        return hit({
+          results: [
+            {
+              title: "Tavily hit",
+              url: "https://tavily.example/b",
+              content: "tavily snippet",
+              score: 0.8,
+            },
+          ],
+        });
       }
       if (u.endsWith("/extract")) {
-        return hit({ results: [{ url: "https://tavily.example/b", title: "T page", raw_content: "# tavily content" }], failed_results: [] });
+        return hit({
+          results: [
+            {
+              url: "https://tavily.example/b",
+              title: "T page",
+              raw_content: "# tavily content",
+            },
+          ],
+          failed_results: [],
+        });
       }
       if (u.endsWith("/crawl")) {
-        return hit({ base_url: "tavily.example", results: [{ url: "https://tavily.example/b", raw_content: "crawled" }] });
+        return hit({
+          base_url: "tavily.example",
+          results: [
+            { url: "https://tavily.example/b", raw_content: "crawled" },
+          ],
+        });
       }
       if (u.endsWith("/map")) {
-        return hit({ base_url: "tavily.example", results: ["https://tavily.example/b", "https://tavily.example/c"] });
+        return hit({
+          base_url: "tavily.example",
+          results: ["https://tavily.example/b", "https://tavily.example/c"],
+        });
       }
     }
     // ---- firecrawl ----
     if (u.includes("firecrawl")) {
       if (u.endsWith("/v2/search")) {
-        return hit({ success: true, data: [{ url: "https://fc.example/a", title: "FC hit", description: "fc desc" }] });
+        return hit({
+          success: true,
+          data: [
+            {
+              url: "https://fc.example/a",
+              title: "FC hit",
+              description: "fc desc",
+            },
+          ],
+        });
       }
       if (u.endsWith("/v2/scrape")) {
-        return hit({ success: true, data: { markdown: "# fc markdown", metadata: { title: "FC page", sourceURL: "https://fc.example/a" } } });
+        return hit({
+          success: true,
+          data: {
+            markdown: "# fc markdown",
+            metadata: { title: "FC page", sourceURL: "https://fc.example/a" },
+          },
+        });
       }
       if (u.endsWith("/v2/crawl") && method === "POST") {
         return hit({ success: true, id: "crawl-1", url: "https://fc.example" });
       }
       if (u.includes("/v2/crawl/crawl-1")) {
-        return hit({ status: "completed", data: [{ url: "https://fc.example/a", markdown: "# crawled", metadata: { title: "C" } }] });
+        return hit({
+          status: "completed",
+          data: [
+            {
+              url: "https://fc.example/a",
+              markdown: "# crawled",
+              metadata: { title: "C" },
+            },
+          ],
+        });
       }
       if (u.endsWith("/v2/map")) {
-        return hit({ success: true, links: [{ url: "https://fc.example/a" }, { url: "https://fc.example/b" }] });
+        return hit({
+          success: true,
+          links: [
+            { url: "https://fc.example/a" },
+            { url: "https://fc.example/b" },
+          ],
+        });
       }
     }
     return hit({ error: "not found" }, 404);
@@ -76,21 +155,49 @@ async function setupTools() {
   registry.register(new FirecrawlAdapter());
   const fetchImpl = toolFetch();
   const router = new Router({
-    store, registry, defaultPolicy: "auto", maxAttempts: 8, timeoutMs: 5000,
+    store,
+    registry,
+    defaultPolicy: "auto",
+    maxAttempts: 8,
+    timeoutMs: 5000,
     fetchImpl,
-    defaultBaseUrls: { exa: "https://api.exa.ai", tavily: "https://api.tavily.com", firecrawl: "https://api.firecrawl.dev" },
+    defaultBaseUrls: {
+      exa: "https://api.exa.ai",
+      tavily: "https://api.tavily.com",
+      firecrawl: "https://api.firecrawl.dev",
+    },
   });
   for (const p of [
     { id: "exa", name: "Exa", base: "https://api.exa.ai" },
     { id: "tavily", name: "Tavily", base: "https://api.tavily.com" },
     { id: "firecrawl", name: "Firecrawl", base: "https://api.firecrawl.dev" },
   ]) {
-    store.upsertProvider({ id: p.id, displayName: p.name, baseUrl: p.base, enabled: true, priority: 10 });
-    store.upsertAccount({ id: `${p.id}-main`, providerId: p.id, enabled: true });
-    store.createCredential({ id: `cred-${p.id}-1`, accountId: `${p.id}-main`, secretEncrypted: encryptSecret(`${p.id}-k`), status: "active" });
+    store.upsertProvider({
+      id: p.id,
+      displayName: p.name,
+      baseUrl: p.base,
+      enabled: true,
+      priority: 10,
+    });
+    store.upsertAccount({
+      id: `${p.id}-main`,
+      providerId: p.id,
+      enabled: true,
+    });
+    store.createCredential({
+      id: `cred-${p.id}-1`,
+      accountId: `${p.id}-main`,
+      secretEncrypted: encryptSecret(`${p.id}-k`),
+      status: "active",
+    });
   }
   for (const cap of CAPS) {
-    store.upsertResource({ id: cap, kind: "capability", displayName: cap, capabilities: [cap] });
+    store.upsertResource({
+      id: cap,
+      kind: "capability",
+      displayName: cap,
+      capabilities: [cap],
+    });
   }
   // Overlapping but NOT identical capabilities — the point of the model.
   const mappings: Array<[string, string, string[]]> = [
@@ -108,12 +215,21 @@ async function setupTools() {
   for (const [provider, upstream, caps] of mappings) {
     for (const cap of caps) {
       store.upsertProviderResource({
-        resourceId: cap, providerId: provider, upstreamId: upstream,
-        capabilities: [cap as (typeof CAPS)[number]], enabled: true,
+        resourceId: cap,
+        providerId: provider,
+        upstreamId: upstream,
+        capabilities: [cap as (typeof CAPS)[number]],
+        enabled: true,
       });
     }
   }
-  const app = await buildApp({ store, registry, router, adminToken: "", settings: { defaultPolicy: "auto" }, fetchImpl: undefined });
+  const app = await buildApp({
+    store,
+    registry,
+    router,
+    settings: { defaultPolicy: "auto" },
+    fetchImpl: undefined,
+  });
   return { app, store };
 }
 
@@ -121,8 +237,12 @@ describe("generic tool capabilities", () => {
   it("scrapes via firecrawl when pinned", async () => {
     const { app } = await setupTools();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/scrape",
-      payload: { url: "https://fc.example/a", routing: { provider: "firecrawl" } },
+      method: "POST",
+      url: "/v1/tools/scrape",
+      payload: {
+        url: "https://fc.example/a",
+        routing: { provider: "firecrawl" },
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().object).toBe("scrape.result");
@@ -133,7 +253,8 @@ describe("generic tool capabilities", () => {
   it("scrapes via exa contents endpoint", async () => {
     const { app } = await setupTools();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/scrape",
+      method: "POST",
+      url: "/v1/tools/scrape",
       payload: { url: "https://exa.example/a", routing: { provider: "exa" } },
     });
     expect(res.statusCode).toBe(200);
@@ -143,8 +264,12 @@ describe("generic tool capabilities", () => {
   it("extracts multiple URLs via tavily", async () => {
     const { app } = await setupTools();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/extract",
-      payload: { urls: ["https://tavily.example/b"], routing: { provider: "tavily" } },
+      method: "POST",
+      url: "/v1/tools/extract",
+      payload: {
+        urls: ["https://tavily.example/b"],
+        routing: { provider: "tavily" },
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().object).toBe("extract.results");
@@ -154,8 +279,13 @@ describe("generic tool capabilities", () => {
   it("crawls via firecrawl (async job + poll)", async () => {
     const { app } = await setupTools();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/crawl",
-      payload: { url: "https://fc.example", limit: 5, routing: { provider: "firecrawl" } },
+      method: "POST",
+      url: "/v1/tools/crawl",
+      payload: {
+        url: "https://fc.example",
+        limit: 5,
+        routing: { provider: "firecrawl" },
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().object).toBe("crawl.results");
@@ -165,8 +295,12 @@ describe("generic tool capabilities", () => {
   it("maps via tavily", async () => {
     const { app } = await setupTools();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/map",
-      payload: { url: "https://tavily.example", routing: { provider: "tavily" } },
+      method: "POST",
+      url: "/v1/tools/map",
+      payload: {
+        url: "https://tavily.example",
+        routing: { provider: "tavily" },
+      },
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().object).toBe("map.results");
@@ -176,7 +310,8 @@ describe("generic tool capabilities", () => {
   it("falls back across providers for the same capability", async () => {
     const { app } = await setupTools();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/scrape",
+      method: "POST",
+      url: "/v1/tools/scrape",
       payload: { url: "https://fc.example/a", routing: { policy: "priority" } },
     });
     expect(res.statusCode).toBe(200);
@@ -186,7 +321,9 @@ describe("generic tool capabilities", () => {
   it("rejects invalid tool input with 400", async () => {
     const { app } = await setupTools();
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/scrape", payload: { url: "not-a-url" },
+      method: "POST",
+      url: "/v1/tools/scrape",
+      payload: { url: "not-a-url" },
     });
     expect(res.statusCode).toBe(400);
   });
@@ -194,9 +331,12 @@ describe("generic tool capabilities", () => {
   it("returns 404/503 when no provider supports the capability", async () => {
     const { app, store } = await setupTools();
     // Remove every web.map mapping → no routes at all.
-    for (const pr of store.listProviderResources("web.map")) store.deleteProviderResource(pr.id);
+    for (const pr of store.listProviderResources("web.map"))
+      store.deleteProviderResource(pr.id);
     const res = await app.inject({
-      method: "POST", url: "/v1/tools/map", payload: { url: "https://example.com" },
+      method: "POST",
+      url: "/v1/tools/map",
+      payload: { url: "https://example.com" },
     });
     expect([404, 503]).toContain(res.statusCode);
   });
@@ -204,8 +344,12 @@ describe("generic tool capabilities", () => {
   it("records pages/crawl_units usage per capability", async () => {
     const { app, store } = await setupTools();
     await app.inject({
-      method: "POST", url: "/v1/tools/scrape",
-      payload: { url: "https://fc.example/a", routing: { provider: "firecrawl" } },
+      method: "POST",
+      url: "/v1/tools/scrape",
+      payload: {
+        url: "https://fc.example/a",
+        routing: { provider: "firecrawl" },
+      },
     });
     const since = new Date(Date.now() - 60_000).toISOString();
     expect(store.sumUsage("cred-firecrawl-1", "pages", since)).toBe(1);
@@ -232,23 +376,71 @@ describe("plug-and-play provider contract", () => {
             probe: { path: "/search", body: () => ({ q: "x" }) },
             quotaMetric: "searches",
             run: async (call) => {
-              if (call.normalized.kind !== "web.search") throw new Error("wrong kind");
+              if (call.normalized.kind !== "web.search")
+                throw new Error("wrong kind");
               await call.post("/search", { q: call.normalized.body.query });
-              return { kind: "web.search", body: { results: [{ title: "acme", url: "https://acme.test", snippet: "s" }] } };
+              return {
+                kind: "web.search",
+                body: {
+                  results: [
+                    { title: "acme", url: "https://acme.test", snippet: "s" },
+                  ],
+                },
+              };
             },
           },
         ],
       }),
     );
-    const fetchImpl = (async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) as typeof fetch;
-    const router = new Router({ store, registry, fetchImpl, defaultBaseUrls: { acme: "https://api.acme.test" } });
-    store.upsertProvider({ id: "acme", displayName: "Acme", baseUrl: "https://api.acme.test", enabled: true, priority: 10 });
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+      })) as typeof fetch;
+    const router = new Router({
+      store,
+      registry,
+      fetchImpl,
+      defaultBaseUrls: { acme: "https://api.acme.test" },
+    });
+    store.upsertProvider({
+      id: "acme",
+      displayName: "Acme",
+      baseUrl: "https://api.acme.test",
+      enabled: true,
+      priority: 10,
+    });
     store.upsertAccount({ id: "acme-main", providerId: "acme", enabled: true });
-    store.createCredential({ id: "cred-acme-1", accountId: "acme-main", secretEncrypted: encryptSecret("k"), status: "active" });
-    store.upsertResource({ id: "web.search", kind: "capability", displayName: "Web search", capabilities: ["web.search"] });
-    store.upsertProviderResource({ resourceId: "web.search", providerId: "acme", upstreamId: "search", capabilities: ["web.search"], enabled: true });
-    const app = await buildApp({ store, registry, router, adminToken: "", settings: { defaultPolicy: "auto" }, fetchImpl: undefined });
-    const res = await app.inject({ method: "POST", url: "/v1/tools/search", payload: { query: "hi" } });
+    store.createCredential({
+      id: "cred-acme-1",
+      accountId: "acme-main",
+      secretEncrypted: encryptSecret("k"),
+      status: "active",
+    });
+    store.upsertResource({
+      id: "web.search",
+      kind: "capability",
+      displayName: "Web search",
+      capabilities: ["web.search"],
+    });
+    store.upsertProviderResource({
+      resourceId: "web.search",
+      providerId: "acme",
+      upstreamId: "search",
+      capabilities: ["web.search"],
+      enabled: true,
+    });
+    const app = await buildApp({
+      store,
+      registry,
+      router,
+      settings: { defaultPolicy: "auto" },
+      fetchImpl: undefined,
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/tools/search",
+      payload: { query: "hi" },
+    });
     expect(res.statusCode).toBe(200);
     expect(res.json().results[0].title).toBe("acme");
   });

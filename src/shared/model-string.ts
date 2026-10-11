@@ -45,7 +45,9 @@ export function toCanonicalId(logicalModel: string): string {
 }
 
 /** Extract routing hints from headers (preferred) or body.routing extension. */
-export function routingHintsFromHeaders(headers: Record<string, string | string[] | undefined>): {
+export function routingHintsFromHeaders(
+  headers: Record<string, string | string[] | undefined>,
+): {
   provider?: string;
   account?: string;
   credential?: string;

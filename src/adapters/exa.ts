@@ -36,12 +36,19 @@ function snippetOf(h: ExaSearchHit): string {
 }
 
 async function runSearch(call: ToolCall): Promise<NormalizedResponse> {
-  if (call.normalized.kind !== "web.search") throw new Error("exa search: wrong request kind");
+  if (call.normalized.kind !== "web.search")
+    throw new Error("exa search: wrong request kind");
   const q = call.normalized.body;
-  const upstream: Record<string, unknown> = { query: q.query, numResults: q.maxResults };
+  const upstream: Record<string, unknown> = {
+    query: q.query,
+    numResults: q.maxResults,
+  };
   if (q.includeDomains?.length) upstream.includeDomains = q.includeDomains;
   if (q.excludeDomains?.length) upstream.excludeDomains = q.excludeDomains;
-  const { json } = await call.post<{ results?: ExaSearchHit[] }>("/search", upstream);
+  const { json } = await call.post<{ results?: ExaSearchHit[] }>(
+    "/search",
+    upstream,
+  );
   return {
     kind: "web.search",
     body: {
@@ -80,33 +87,60 @@ export const exaAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
       {
         capability: "web.search",
         description: "Exa neural web search",
-        probe: { path: "/search", body: () => ({ query: "test", numResults: 1 }) },
+        probe: {
+          path: "/search",
+          body: () => ({ query: "test", numResults: 1 }),
+        },
         quotaMetric: "searches",
         run: runSearch,
       },
       {
         capability: "web.scrape",
         description: "Exa page contents (single URL)",
-        probe: { path: "/search", body: () => ({ query: "test", numResults: 1 }) },
+        probe: {
+          path: "/search",
+          body: () => ({ query: "test", numResults: 1 }),
+        },
         quotaMetric: "pages",
         run: async (call) => {
-          if (call.normalized.kind !== "web.scrape") throw new Error("exa scrape: wrong request kind");
+          if (call.normalized.kind !== "web.scrape")
+            throw new Error("exa scrape: wrong request kind");
           const [page] = await runContents(call, [call.normalized.body.url]);
-          const markdown = (page?.content ?? "").slice(0, call.normalized.body.maxChars ?? 50_000);
-          return { kind: "web.scrape", body: { url: page?.url ?? call.normalized.body.url, title: page?.title, markdown } };
+          const markdown = (page?.content ?? "").slice(
+            0,
+            call.normalized.body.maxChars ?? 50_000,
+          );
+          return {
+            kind: "web.scrape",
+            body: {
+              url: page?.url ?? call.normalized.body.url,
+              title: page?.title,
+              markdown,
+            },
+          };
         },
       },
       {
         capability: "web.extract",
         description: "Exa page contents (up to 20 URLs)",
-        probe: { path: "/search", body: () => ({ query: "test", numResults: 1 }) },
+        probe: {
+          path: "/search",
+          body: () => ({ query: "test", numResults: 1 }),
+        },
         quotaMetric: "pages",
         run: async (call) => {
-          if (call.normalized.kind !== "web.extract") throw new Error("exa extract: wrong request kind");
+          if (call.normalized.kind !== "web.extract")
+            throw new Error("exa extract: wrong request kind");
           const pages = await runContents(call, call.normalized.body.urls);
           return {
             kind: "web.extract",
-            body: { results: pages.map((p) => ({ url: p.url, title: p.title, content: p.content })) },
+            body: {
+              results: pages.map((p) => ({
+                url: p.url,
+                title: p.title,
+                content: p.content,
+              })),
+            },
           };
         },
       },

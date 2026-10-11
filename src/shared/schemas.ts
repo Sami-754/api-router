@@ -24,7 +24,11 @@ export const policySchema = z.enum([
 ]);
 
 export const providerSchema = z.object({
-  id: z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9-_]*$/i),
+  id: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9][a-z0-9-_]*$/i),
   displayName: z.string().min(1).max(128),
   baseUrl: z.string().url().optional().nullable(),
   enabled: z.boolean().default(true),
@@ -101,7 +105,13 @@ export const quotaWindowSchema = z.object({
   resetAt: z.string().datetime().optional().nullable(),
   hard: z.boolean().default(true),
   source: z
-    .enum(["provider_api", "response_headers", "configured", "learned", "estimated"])
+    .enum([
+      "provider_api",
+      "response_headers",
+      "configured",
+      "learned",
+      "estimated",
+    ])
     .default("configured"),
   confidence: z.number().min(0).max(1).optional().nullable(),
 });

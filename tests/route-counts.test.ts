@@ -5,7 +5,8 @@ describe("route counts", () => {
   it("returns per-resource counts in one request", async () => {
     const { app } = await createTestSetup();
     const res = await app.inject({
-      method: "GET", url: "/api/routes/counts?capability=llm.chat",
+      method: "GET",
+      url: "/api/routes/counts?capability=llm.chat",
     });
     expect(res.statusCode).toBe(200);
     // 2 provider mappings × 1 cred each = 2 routes.

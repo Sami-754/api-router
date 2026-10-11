@@ -39,11 +39,7 @@ import type { Capability, QuotaMetric } from "../shared/types.js";
 //            POST /v2/map    {url, limit} → {success, links:[{url}]}
 
 export type ToolCapability =
-  | "web.search"
-  | "web.scrape"
-  | "web.extract"
-  | "web.crawl"
-  | "web.map";
+  "web.search" | "web.scrape" | "web.extract" | "web.crawl" | "web.map";
 
 export type ToolQuotaMetric = Extract<
   QuotaMetric,
@@ -88,7 +84,10 @@ export interface ToolAdapterOptions {
   handlers: ToolHandler[];
 }
 
-export function authHeaders(auth: ToolAuth, secret: string): Record<string, string> {
+export function authHeaders(
+  auth: ToolAuth,
+  secret: string,
+): Record<string, string> {
   const base: Record<string, string> = { "Content-Type": "application/json" };
   if (auth.kind === "x-api-key") return { ...base, "x-api-key": secret };
   return { ...base, Authorization: `Bearer ${secret}` };
@@ -121,10 +120,16 @@ async function requestWithTimeout(
   }
 }
 
-function toProviderError(status: number, text: string, url: string): ProviderError {
+function toProviderError(
+  status: number,
+  text: string,
+  url: string,
+): ProviderError {
   let code: string | undefined;
   try {
-    const j = JSON.parse(text) as { error?: { code?: string; type?: string } | string };
+    const j = JSON.parse(text) as {
+      error?: { code?: string; type?: string } | string;
+    };
     if (typeof j?.error === "string") code = j.error;
     else code = j?.error?.code ?? j?.error?.type ?? undefined;
   } catch {
@@ -138,7 +143,9 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
   const id = opts.providerId.toLowerCase();
   const baseOf = (route?: ResolvedRoute, ctx?: AdapterContext): string => {
     const raw =
-      ctx?.baseUrl?.trim() || route?.effectiveBaseUrl?.trim() || opts.defaultBaseUrl;
+      ctx?.baseUrl?.trim() ||
+      route?.effectiveBaseUrl?.trim() ||
+      opts.defaultBaseUrl;
     return raw.replace(/\/$/, "");
   };
   const byCapability = new Map<ToolCapability, ToolHandler>(
@@ -173,26 +180,43 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
           context.timeoutMs,
         );
       } catch (e) {
-        if (e instanceof Error && (e.name === "AbortError" || /abort/i.test(e.message))) {
-          throw Object.assign(new Error(`upstream timeout after ${context.timeoutMs}ms`), {
-            providerError: timeoutError("timeout"),
-          });
+        if (
+          e instanceof Error &&
+          (e.name === "AbortError" || /abort/i.test(e.message))
+        ) {
+          throw Object.assign(
+            new Error(`upstream timeout after ${context.timeoutMs}ms`),
+            {
+              providerError: timeoutError("timeout"),
+            },
+          );
         }
-        throw Object.assign(new Error(`upstream network error: ${e instanceof Error ? e.message : String(e)}`), {
-          providerError: networkError(String(e)),
-        });
+        throw Object.assign(
+          new Error(
+            `upstream network error: ${e instanceof Error ? e.message : String(e)}`,
+          ),
+          {
+            providerError: networkError(String(e)),
+          },
+        );
       }
       const text = await res.text();
       if (!res.ok) {
         const classified = toProviderError(res.status, text, url);
-        throw Object.assign(new Error(classified.message), { providerError: classified });
+        throw Object.assign(new Error(classified.message), {
+          providerError: classified,
+        });
       }
       let json: T;
       try {
         json = JSON.parse(text) as T;
       } catch {
         throw Object.assign(new Error("invalid JSON from upstream"), {
-          providerError: { errorClass: "provider_unavailable", message: "invalid JSON", retryable: true } satisfies ProviderError,
+          providerError: {
+            errorClass: "provider_unavailable",
+            message: "invalid JSON",
+            retryable: true,
+          } satisfies ProviderError,
         });
       }
       return { status: res.status, json, text };
@@ -231,14 +255,24 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
         await callFor(
           credential.secret,
           (context.baseUrl?.trim() || opts.defaultBaseUrl).replace(/\/$/, ""),
-          { kind: "web.search", body: { requestId: context.requestId, query: "probe", maxResults: 1 } },
-          { effectiveBaseUrl: context.baseUrl ?? opts.defaultBaseUrl } as ResolvedRoute,
+          {
+            kind: "web.search",
+            body: {
+              requestId: context.requestId,
+              query: "probe",
+              maxResults: 1,
+            },
+          },
+          {
+            effectiveBaseUrl: context.baseUrl ?? opts.defaultBaseUrl,
+          } as ResolvedRoute,
           context,
         ).post(first.probe.path, first.probe.body(credential.secret));
         return { ok: true, message: "credential valid" };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (/upstream HTTP (401|403)/.test(msg)) return { ok: false, message: "credential rejected" };
+        if (/upstream HTTP (401|403)/.test(msg))
+          return { ok: false, message: "credential rejected" };
         return { ok: false, message: msg };
       }
     },
@@ -251,9 +285,16 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
       const kind = request.kind as ToolCapability;
       const handler = byCapability.get(kind);
       if (!handler) {
-        throw Object.assign(new Error(`unsupported capability for ${id}: ${request.kind}`), {
-          providerError: { errorClass: "unsupported", message: "unsupported", retryable: false } satisfies ProviderError,
-        });
+        throw Object.assign(
+          new Error(`unsupported capability for ${id}: ${request.kind}`),
+          {
+            providerError: {
+              errorClass: "unsupported",
+              message: "unsupported",
+              retryable: false,
+            } satisfies ProviderError,
+          },
+        );
       }
       const call = callFor(
         route.credentialSecret,
@@ -266,16 +307,29 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
     },
 
     classifyError(error: unknown): ProviderError {
-      if (typeof error === "object" && error !== null && "providerError" in error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "providerError" in error
+      ) {
         return (error as { providerError: ProviderError }).providerError;
       }
       if (error instanceof Error) {
-        if (/timeout|aborted|abort/i.test(error.message)) return timeoutError(error.message);
-        if (/fetch failed|network|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(error.message)) {
+        if (/timeout|aborted|abort/i.test(error.message))
+          return timeoutError(error.message);
+        if (
+          /fetch failed|network|ECONNREFUSED|ENOTFOUND|EAI_AGAIN/i.test(
+            error.message,
+          )
+        ) {
           return networkError(error.message);
         }
       }
-      return { errorClass: "unknown", message: error instanceof Error ? error.message : String(error), retryable: false };
+      return {
+        errorClass: "unknown",
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      };
     },
   };
 }
@@ -287,24 +341,38 @@ export async function pollCrawlJob<T>(
   opts: { pollMs?: number; timeoutMs?: number } = {},
 ): Promise<T> {
   const pollMs = opts.pollMs ?? 2000;
-  const budgetMs = Math.max(10_000, Math.min(opts.timeoutMs ?? call.context.timeoutMs, 120_000));
+  const budgetMs = Math.max(
+    10_000,
+    Math.min(opts.timeoutMs ?? call.context.timeoutMs, 120_000),
+  );
   const deadline = Date.now() + budgetMs;
   for (;;) {
     if (Date.now() > deadline) {
-      throw Object.assign(new Error(`crawl ${jobId} did not finish within ${budgetMs}ms`), {
-        providerError: timeoutError("crawl polling timed out"),
-      });
+      throw Object.assign(
+        new Error(`crawl ${jobId} did not finish within ${budgetMs}ms`),
+        {
+          providerError: timeoutError("crawl polling timed out"),
+        },
+      );
     }
     await new Promise((r) => setTimeout(r, pollMs));
     const { json } = await call.get<T>(`/v2/crawl/${jobId}`);
-    const status = String((json as Record<string, unknown>).status ?? "").toLowerCase();
-    if (["completed", "complete", "done", "finished"].includes(status)) return json;
+    const status = String(
+      (json as Record<string, unknown>).status ?? "",
+    ).toLowerCase();
+    if (["completed", "complete", "done", "finished"].includes(status))
+      return json;
     if (["failed", "error", "cancelled", "canceled"].includes(status)) {
       throw Object.assign(new Error(`crawl ${jobId} ${status}`), {
-        providerError: { errorClass: "provider_unavailable", message: `crawl ${status}`, retryable: true } satisfies ProviderError,
+        providerError: {
+          errorClass: "provider_unavailable",
+          message: `crawl ${status}`,
+          retryable: true,
+        } satisfies ProviderError,
       });
     }
     // Unknown/absent status with inline data → treat as done (defensive).
-    if (!status && Array.isArray((json as Record<string, unknown>).data)) return json;
+    if (!status && Array.isArray((json as Record<string, unknown>).data))
+      return json;
   }
 }

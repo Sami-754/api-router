@@ -14,24 +14,32 @@ export interface QuotaView {
 
 export function remainingFractionOf(w: QuotaWindow): number | null {
   if (w.limitValue <= 0) return null;
-  const remaining =
-    w.remainingValue ?? Math.max(0, w.limitValue - w.usedValue);
+  const remaining = w.remainingValue ?? Math.max(0, w.limitValue - w.usedValue);
   return Math.min(1, Math.max(0, remaining / w.limitValue));
 }
 
-export function msUntilReset(w: QuotaWindow, nowMs = Date.now()): number | null {
+export function msUntilReset(
+  w: QuotaWindow,
+  nowMs = Date.now(),
+): number | null {
   if (!w.resetAt) return null;
   const t = Date.parse(w.resetAt);
   if (Number.isNaN(t)) return null;
   return Math.max(0, t - nowMs);
 }
 
-export function quotaViewForRoute(store: Store, route: Route, nowMs = Date.now()): QuotaView {
+export function quotaViewForRoute(
+  store: Store,
+  route: Route,
+  nowMs = Date.now(),
+): QuotaView {
   // Quota windows attach to credentials (optionally scoped to a provider resource).
   // A window scoped to another provider resource does not constrain this route.
   const all = store.listQuotaWindows(route.credentialId);
   const windows = all.filter(
-    (w) => !w.providerResourceId || w.providerResourceId === route.providerResourceId,
+    (w) =>
+      !w.providerResourceId ||
+      w.providerResourceId === route.providerResourceId,
   );
   const exhaustedReasons: string[] = [];
   let minFraction: number | null = null;
@@ -51,10 +59,13 @@ export function quotaViewForRoute(store: Store, route: Route, nowMs = Date.now()
     }
     const remaining = w.remainingValue ?? w.limitValue - w.usedValue;
     if (w.hard && remaining <= 0) {
-      exhaustedReasons.push(`${w.metric} exhausted (${w.usedValue}/${w.limitValue})`);
+      exhaustedReasons.push(
+        `${w.metric} exhausted (${w.usedValue}/${w.limitValue})`,
+      );
     }
     const f = remainingFractionOf(w);
-    if (f != null) minFraction = minFraction == null ? f : Math.min(minFraction, f);
+    if (f != null)
+      minFraction = minFraction == null ? f : Math.min(minFraction, f);
     const ms = msUntilReset(w, nowMs);
     if (ms != null && (msReset == null || ms < msReset)) {
       msReset = ms;
@@ -71,11 +82,6 @@ export function quotaViewForRoute(store: Store, route: Route, nowMs = Date.now()
   };
 }
 
-/** Unknown quota must not be treated as zero — routes without windows stay eligible. */
-export function hasHardExhaustion(view: QuotaView): boolean {
-  return view.exhausted;
-}
-
 // ---------------------------------------------------------------------------
 // Rolling rate windows. High-frequency limits (per minute/hour, rolling, and
 // router-configured daily caps) are evaluated live from usage_events so they
@@ -86,14 +92,22 @@ export function hasHardExhaustion(view: QuotaView): boolean {
 
 /** True when a window is enforced live from usage_events. */
 export function isRateWindow(
-  w: Pick<QuotaWindow, "windowKind" | "windowSeconds" | "remainingValue" | "source">,
+  w: Pick<
+    QuotaWindow,
+    "windowKind" | "windowSeconds" | "remainingValue" | "source"
+  >,
 ): boolean {
   // An explicit remaining value is always authoritative.
   if (w.remainingValue != null) return false;
   if (w.windowKind === "rolling_seconds") return w.windowSeconds != null;
-  if (w.windowKind === "calendar_minute" || w.windowKind === "calendar_hour") return true;
+  if (w.windowKind === "calendar_minute" || w.windowKind === "calendar_hour")
+    return true;
   if (w.windowKind === "calendar_day") {
-    return w.source === "configured" || w.source === "learned" || w.source === "estimated";
+    return (
+      w.source === "configured" ||
+      w.source === "learned" ||
+      w.source === "estimated"
+    );
   }
   return false;
 }
@@ -139,12 +153,23 @@ export function rateChecksFor(
   const out: RateCheck[] = [];
   for (const w of store.listQuotaWindows(credentialId)) {
     if (!w.hard) continue;
-    if (w.providerResourceId && w.providerResourceId !== providerResourceId) continue;
+    if (w.providerResourceId && w.providerResourceId !== providerResourceId)
+      continue;
     if (!isRateWindow(w)) continue;
     const startMs = rateWindowStartMs(w, nowMs);
     if (startMs == null) continue;
-    const used = store.sumUsage(credentialId, w.metric, new Date(startMs).toISOString());
-    out.push({ window: w, used, remaining: w.limitValue - used, windowStartIso: new Date(startMs).toISOString() });
+    const used = store.sumUsage(
+      credentialId,
+      w.metric,
+      new Date(startMs).toISOString(),
+      w.providerResourceId ?? undefined,
+    );
+    out.push({
+      window: w,
+      used,
+      remaining: w.limitValue - used,
+      windowStartIso: new Date(startMs).toISOString(),
+    });
   }
   return out;
 }

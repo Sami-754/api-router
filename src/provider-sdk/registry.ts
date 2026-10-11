@@ -9,7 +9,8 @@ export class ProviderRegistry {
 
   register(adapter: ProviderAdapter): void {
     const id = adapter.id.toLowerCase();
-    if (this.adapters.has(id)) throw new Error(`adapter already registered: ${id}`);
+    if (this.adapters.has(id))
+      throw new Error(`adapter already registered: ${id}`);
     this.adapters.set(id, adapter);
   }
 
