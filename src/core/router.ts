@@ -1,4 +1,4 @@
-import { decryptSecret, newId } from "../shared/crypto.js";
+import { decryptSecret, newId, redactSecrets } from "../shared/crypto.js";
 import type {
   Capability,
   ProviderErrorClass,
@@ -26,6 +26,7 @@ export interface RouterOptions {
   registry: ProviderRegistry;
   defaultPolicy?: RoutingPolicyName;
   maxAttempts?: number;
+  /** Total execution budget across fallback attempts, including response-body reads. */
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
   /** Resolve provider base URL: provider record baseUrl or adapter default. */
@@ -78,6 +79,8 @@ export interface StreamOutcome {
     aborted: boolean;
     error?: string;
   }) => void;
+  /** Immediately cancels the upstream stream reader when the client disconnects. */
+  cancel?: () => void;
 }
 
 export class RouterError extends Error {
@@ -118,7 +121,7 @@ export class Router {
   private timeoutMs: number;
   private fetchImpl?: typeof fetch;
   private defaultBaseUrls: Record<string, string>;
-  /** Next start slot in each provider's API-key ring. One process, in memory. */
+  /** Next start slot for equal-scored credentials of each provider. */
   private keyCursor = new Map<string, number>();
 
   constructor(opts: RouterOptions) {
@@ -154,8 +157,11 @@ export class Router {
     hint?: RoutingHint,
     requestedTokens?: number | null,
     nowMs = Date.now(),
+    onlyRouteId?: string,
   ): EligibilityResult {
-    const routes = this.store.expandRoutes(resourceId, capability);
+    const routes = this.store
+      .expandRoutes(resourceId, capability)
+      .filter((route) => !onlyRouteId || route.routeId === onlyRouteId);
     const eligible: ScoredCandidate[] = [];
     const filtered: Array<{ route: Route; reason: string }> = [];
     const policy = this.resolvePolicy(hint);
@@ -166,10 +172,8 @@ export class Router {
     const allowCross = hint?.allowCrossProviderFallback ?? false;
 
     for (const route of routes) {
-      // Explicit pins (hard filters). A provider-pinned request never
-      // crosses providers unless allowCrossProviderFallback is set — but
-      // candidate restriction itself always applies; crossing only matters
-      // at fallback time when the pinned provider has no eligible routes.
+      // Cross-provider opt-in admits fallback candidates; orderAttempts()
+      // keeps the explicitly pinned provider first.
       if (providerPin && route.providerId !== providerPin && !allowCross) {
         filtered.push({ route, reason: `pinned to provider ${providerPin}` });
         continue;
@@ -208,10 +212,18 @@ export class Router {
         });
         continue;
       }
-      if (!this.registry.get(route.providerId)) {
+      const adapter = this.registry.get(route.providerId);
+      if (!adapter) {
         filtered.push({
           route,
           reason: `no adapter for provider ${route.providerId}`,
+        });
+        continue;
+      }
+      if (!adapter.capabilities().some((c) => c.capability === capability)) {
+        filtered.push({
+          route,
+          reason: `adapter capability ${capability} unsupported`,
         });
         continue;
       }
@@ -279,13 +291,7 @@ export class Router {
         continue;
       }
       // Phase 3: policy scoring.
-      const quotas = this.store
-        .listQuotaWindows(route.credentialId)
-        .filter(
-          (w) =>
-            !w.providerResourceId ||
-            w.providerResourceId === route.providerResourceId,
-        );
+      const quotas = qv.windows;
       const { score, reason, details } = scoreRoute(policy, {
         route,
         quotas,
@@ -370,7 +376,7 @@ export class Router {
     }
 
     // Same-score keys of one provider take turns. On failure, walk the rest.
-    const queue = this.orderAttempts(eligible);
+    const queue = this.orderAttempts(eligible, providerPin);
     const budget = credentialPinned
       ? 1
       : Math.min(queue.length, this.maxAttempts);
@@ -379,8 +385,29 @@ export class Router {
     const tried = new Set<string>();
 
     while (queue.length > 0 && attempts < budget) {
+      const remainingMs = this.timeoutMs - (Date.now() - started);
+      if (remainingMs <= 0) {
+        lastError = new RouterError("router execution time budget exhausted", {
+          statusCode: 504,
+          code: "router_timeout",
+          errorClass: "timeout",
+          attempts,
+        });
+        break;
+      }
       const candidate = queue.shift()!;
       if (tried.has(candidate.route.routeId)) continue;
+      if (
+        !this.candidates(
+          opts.resourceId,
+          opts.capability,
+          opts.hint,
+          opts.requestedTokens,
+          Date.now(),
+          candidate.route.routeId,
+        ).eligible.some((c) => c.route.routeId === candidate.route.routeId)
+      )
+        continue;
       // Provider-pinned requests stay within the pinned provider unless
       // the caller explicitly opts into cross-provider fallback.
       if (
@@ -397,7 +424,8 @@ export class Router {
       const ctx: AdapterContext = {
         requestId,
         baseUrl: resolved.effectiveBaseUrl,
-        timeoutMs: this.timeoutMs,
+        timeoutMs: Math.max(1, this.timeoutMs - (Date.now() - started)),
+        deadlineAt: started + this.timeoutMs,
         fetchImpl: this.fetchImpl,
       };
       const opStart = Date.now();
@@ -442,7 +470,11 @@ export class Router {
           selectionReason: candidate.reason,
         };
       } catch (err) {
-        const classified = adapter.classifyError(err);
+        const rawError = adapter.classifyError(err);
+        const classified = {
+          ...rawError,
+          message: redactSecrets(rawError.message, [resolved.credentialSecret]),
+        };
         // noteAttemptFailure() records the failure (and retires the
         // key on 401) — do not also call recordFailure() here.
         this.noteAttemptFailure(
@@ -457,33 +489,30 @@ export class Router {
           errorClass: classified.errorClass,
           attempts,
         });
+        this.logAttemptFailure(
+          requestId,
+          opts,
+          policy,
+          candidate,
+          resolved,
+          attempts,
+          classified.errorClass,
+          classified.message,
+          started,
+        );
 
         // A bad request, unknown model, or context overflow will fail the same
         // way on every key. Limits, auth, and upstream errors try the next key.
-        if (credentialPinned || STOP_FAILOVER.has(classified.errorClass)) break;
+        if (
+          credentialPinned ||
+          STOP_FAILOVER.has(classified.errorClass) ||
+          (!classified.retryable && classified.errorClass !== "auth")
+        )
+          break;
       }
     }
 
     const message = lastError?.message ?? "all routes failed";
-    this.store.appendRequestLog({
-      id: `${requestId}:attempt${Math.max(1, attempts)}`,
-      requestedResourceId: opts.resourceId,
-      requestedCapability: opts.capability,
-      providerPin: opts.hint?.provider ?? null,
-      accountPin: opts.hint?.account ?? null,
-      credentialPin: opts.hint?.credential ?? null,
-      policy,
-      selectedProviderId: null,
-      selectedAccountId: null,
-      selectedCredentialId: null,
-      selectedUpstreamId: null,
-      selectionReason: eligible[0]?.reason ?? null,
-      attempts,
-      status: "error",
-      errorClass: lastError?.errorClass ?? "unknown",
-      errorMessage: message,
-      latencyMs: Date.now() - started,
-    });
     throw new RouterError(message, {
       statusCode: lastError?.statusCode ?? 502,
       code: "all_routes_failed",
@@ -523,7 +552,7 @@ export class Router {
       );
     }
 
-    const queue = this.orderAttempts(eligible);
+    const queue = this.orderAttempts(eligible, providerPin);
     const budget = credentialPinned
       ? 1
       : Math.min(queue.length, this.maxAttempts);
@@ -532,8 +561,29 @@ export class Router {
     let lastError: RouterError | null = null;
 
     while (queue.length > 0 && attempts < budget) {
+      const remainingMs = this.timeoutMs - (Date.now() - started);
+      if (remainingMs <= 0) {
+        lastError = new RouterError("router execution time budget exhausted", {
+          statusCode: 504,
+          code: "router_timeout",
+          errorClass: "timeout",
+          attempts,
+        });
+        break;
+      }
       const candidate = queue.shift()!;
       if (tried.has(candidate.route.routeId)) continue;
+      if (
+        !this.candidates(
+          opts.resourceId,
+          opts.capability,
+          opts.hint,
+          opts.requestedTokens,
+          Date.now(),
+          candidate.route.routeId,
+        ).eligible.some((c) => c.route.routeId === candidate.route.routeId)
+      )
+        continue;
       if (
         providerPin &&
         !allowCross &&
@@ -555,7 +605,7 @@ export class Router {
             attempts,
           },
         );
-        this.logStreamAttemptFailure(
+        this.logAttemptFailure(
           requestId,
           opts,
           policy,
@@ -571,7 +621,8 @@ export class Router {
       const ctx: AdapterContext = {
         requestId,
         baseUrl: resolved.effectiveBaseUrl,
-        timeoutMs: this.timeoutMs,
+        timeoutMs: Math.max(1, this.timeoutMs - (Date.now() - started)),
+        deadlineAt: started + this.timeoutMs,
         fetchImpl: this.fetchImpl,
       };
       const opStart = Date.now();
@@ -582,7 +633,16 @@ export class Router {
         // First chunk commits the route. Failure before it → next route.
         const first = await iter.next();
         if (first.done)
-          throw new Error("upstream closed stream without chunks");
+          throw Object.assign(
+            new Error("upstream closed stream without chunks"),
+            {
+              providerError: {
+                errorClass: "provider_unavailable",
+                message: "empty upstream stream",
+                retryable: true,
+              } satisfies ProviderError,
+            },
+          );
         const firstChunk = first.value;
         const rest: AsyncIterable<StreamChunk> = {
           [Symbol.asyncIterator]: async function* () {
@@ -666,12 +726,17 @@ export class Router {
             status: info.aborted || info.error ? "error" : "success",
             errorClass:
               info.aborted || info.error ? "provider_unavailable" : null,
-            errorMessage: info.error ?? null,
+            errorMessage: info.error
+              ? redactSecrets(info.error, [resolved.credentialSecret])
+              : null,
             latencyMs: Date.now() - started,
             promptTokens: usage.promptTokens,
             completionTokens: usage.completionTokens,
             totalTokens: usage.totalTokens,
           });
+        };
+        const cancel = () => {
+          void iter.return?.();
         };
         return {
           requestId,
@@ -681,9 +746,14 @@ export class Router {
           policy,
           selectionReason: candidateReason,
           finish,
+          cancel,
         };
       } catch (err) {
-        const classified = adapter.classifyError(err);
+        const rawError = adapter.classifyError(err);
+        const classified = {
+          ...rawError,
+          message: redactSecrets(rawError.message, [resolved.credentialSecret]),
+        };
         this.noteAttemptFailure(
           resolved.credentialId,
           resolved.providerResourceId,
@@ -697,7 +767,7 @@ export class Router {
         });
         // Failed attempts before the first chunk are logged like the
         // non-stream path — otherwise they never appear in /api/requests.
-        this.logStreamAttemptFailure(
+        this.logAttemptFailure(
           requestId,
           opts,
           policy,
@@ -708,7 +778,12 @@ export class Router {
           classified.message,
           started,
         );
-        if (credentialPinned || STOP_FAILOVER.has(classified.errorClass)) break;
+        if (
+          credentialPinned ||
+          STOP_FAILOVER.has(classified.errorClass) ||
+          (!classified.retryable && classified.errorClass !== "auth")
+        )
+          break;
       }
     }
     throw (
@@ -775,8 +850,8 @@ export class Router {
     });
   }
 
-  /** Log a failed stream attempt before the route commits (mirrors execute()'s per-attempt log). */
-  private logStreamAttemptFailure(
+  /** Record each failed attempt against the executable route actually used. */
+  private logAttemptFailure(
     requestId: string,
     opts: ExecuteOptions,
     policy: RoutingPolicyName,
@@ -809,39 +884,48 @@ export class Router {
   }
 
   /**
-   * Within each provider, eligible keys form a stable ring (by credential id).
-   * Each request starts one key later. Provider order stays the score order,
-   * so a pinned or higher-ranked provider is still tried before the next one.
-   * On failure the caller walks the rest of that ring, then the next provider.
+   * Preserve score order. Rotate only equal-scored routes within a provider.
+   * A provider pin takes precedence even when cross-provider fallback is allowed.
    */
-  private orderAttempts(eligible: ScoredCandidate[]): ScoredCandidate[] {
+  private orderAttempts(
+    eligible: ScoredCandidate[],
+    providerPin: string | null,
+  ): ScoredCandidate[] {
     if (eligible.length <= 1) return eligible;
-    const providerOrder: string[] = [];
-    const groups = new Map<string, ScoredCandidate[]>();
-    for (const candidate of eligible) {
-      const providerId = candidate.route.providerId;
-      const list = groups.get(providerId);
-      if (!list) {
-        groups.set(providerId, [candidate]);
-        providerOrder.push(providerId);
-      } else {
-        list.push(candidate);
-      }
-    }
-    const out: ScoredCandidate[] = [];
-    for (const providerId of providerOrder) {
-      const ordered = [...groups.get(providerId)!].sort((a, b) =>
-        a.route.credentialId.localeCompare(b.route.credentialId),
-      );
-      if (ordered.length === 1) {
-        out.push(ordered[0]!);
-        continue;
-      }
-      const cursor = this.keyCursor.get(providerId) ?? 0;
+    const out = [...eligible].sort((a, b) => {
+      const pinOrder =
+        Number(b.route.providerId === providerPin) -
+        Number(a.route.providerId === providerPin);
+      return pinOrder || b.score - a.score;
+    });
+    const groups = new Map<string, number[]>();
+    out.forEach((c, i) => {
+      const key = `${c.route.providerId}:${c.score}`;
+      const positions = groups.get(key) ?? [];
+      positions.push(i);
+      groups.set(key, positions);
+    });
+    const cursors = new Map<string, number>();
+    for (const positions of groups.values()) {
+      if (positions.length < 2) continue;
+      const ordered = positions
+        .map((i) => out[i])
+        .sort(
+          (a, b) =>
+            a.route.credentialId.localeCompare(b.route.credentialId) ||
+            a.route.routeId.localeCompare(b.route.routeId),
+        );
+      const providerId = ordered[0].route.providerId;
+      const cursor =
+        cursors.get(providerId) ?? this.keyCursor.get(providerId) ?? 0;
       const start = cursor % ordered.length;
-      this.keyCursor.set(providerId, cursor + 1);
-      out.push(...ordered.slice(start), ...ordered.slice(0, start));
+      cursors.set(providerId, cursor);
+      positions.forEach((pos, i) => {
+        out[pos] = ordered[(start + i) % ordered.length];
+      });
     }
+    for (const [providerId, cursor] of cursors)
+      this.keyCursor.set(providerId, cursor + 1);
     return out;
   }
 
@@ -1022,7 +1106,10 @@ function extractUsage(response: NormalizedResponse): {
 
 function estimateTokensOf(request: NormalizedRequest): number {
   if (request.kind !== "llm.chat") return 64;
-  const chars = request.body.messages.reduce((n, m) => n + m.content.length, 0);
+  const chars = request.body.messages.reduce(
+    (n, m) => n + (m.content ? m.content.length : 0),
+    0,
+  );
   return estimateTokensFromChars(chars);
 }
 

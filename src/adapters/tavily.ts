@@ -60,7 +60,7 @@ const probe = {
   body: () => ({ query: "test", max_results: 1 }),
 };
 
-export const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
+const tavilyAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
   defineToolAdapter({
     providerId: "tavily",
     displayName: "Tavily",

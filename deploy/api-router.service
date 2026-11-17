@@ -1,0 +1,18 @@
+[Unit]
+Description=API Router — quota-aware LLM/tool router
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Self-hosted single-user service: runs the compiled build (pnpm build),
+# reads .env + ./data/router.db from the working directory.
+WorkingDirectory=%h/Tools/API router
+ExecStart=%h/.local/share/fnm/node-versions/v24.16.0/installation/bin/node dist/server/main.js
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

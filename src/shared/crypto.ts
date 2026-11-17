@@ -1,13 +1,8 @@
-import {
-  createCipheriv,
-  createDecipheriv,
-  randomBytes,
-  timingSafeEqual,
-} from "node:crypto";
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 // AES-256-GCM credential encryption. MASTER_KEY must be 32+ chars; we derive
 // a 32-byte key via SHA-256 so any long secret works, while still requiring length.
-export function requireMasterKey(): string {
+function requireMasterKey(): string {
   const k = process.env.MASTER_KEY ?? "";
   if (k.length < 32) {
     throw new Error(
@@ -56,19 +51,16 @@ export function redactCredentialId(id: string): string {
   return `${id.slice(0, 3)}…${id.slice(-3)}`;
 }
 
-export function timingSafeCompare(a: string, b: string): boolean {
-  const ab = Buffer.from(a, "utf8");
-  const bb = Buffer.from(b, "utf8");
-  if (ab.length !== bb.length) {
-    // Still compare something to avoid early-return timing signal on length.
-    const len = Math.max(ab.length, bb.length);
-    const pa = Buffer.alloc(len, 0);
-    const pb = Buffer.alloc(len, 1);
-    ab.copy(pa);
-    bb.copy(pb);
-    return timingSafeEqual(pa, pb) && false;
+/** Remove exact secret values (including URL-encoded echoes) from upstream errors. */
+export function redactSecrets(message: string, secrets: string[]): string {
+  let safe = message;
+  for (const secret of secrets) {
+    if (!secret) continue;
+    for (const value of new Set([secret, encodeURIComponent(secret)])) {
+      safe = safe.split(value).join("[redacted]");
+    }
   }
-  return timingSafeEqual(ab, bb);
+  return safe;
 }
 
 export function newId(prefix: string): string {

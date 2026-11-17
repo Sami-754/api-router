@@ -84,17 +84,14 @@ export interface ToolAdapterOptions {
   handlers: ToolHandler[];
 }
 
-export function authHeaders(
-  auth: ToolAuth,
-  secret: string,
-): Record<string, string> {
+function authHeaders(auth: ToolAuth, secret: string): Record<string, string> {
   const base: Record<string, string> = { "Content-Type": "application/json" };
   if (auth.kind === "x-api-key") return { ...base, "x-api-key": secret };
   return { ...base, Authorization: `Bearer ${secret}` };
 }
 
 /** Merge legacy body-key auth (e.g. Tavily's `api_key`) into a payload. */
-export function withBodyAuth(
+function withBodyAuth(
   auth: ToolAuth,
   secret: string,
   payload: Record<string, unknown>,
@@ -111,13 +108,7 @@ async function requestWithTimeout(
   init: RequestInit,
   timeoutMs: number,
 ): Promise<Response> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    return await fetchImpl(url, { ...init, signal: ctrl.signal });
-  } finally {
-    clearTimeout(timer);
-  }
+  return fetchImpl(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
 }
 
 function toProviderError(
@@ -159,6 +150,10 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
     route: ResolvedRoute,
     context: AdapterContext,
   ): ToolCall => {
+    context = {
+      ...context,
+      deadlineAt: context.deadlineAt ?? Date.now() + context.timeoutMs,
+    };
     const headers = authHeaders(opts.auth, secret);
     const fetchImpl = context.fetchImpl ?? fetch;
     const doRequest = async <T>(
@@ -168,6 +163,11 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
     ): Promise<{ status: number; json: T; text: string }> => {
       const url = `${base}${path}`;
       let res: Response;
+      const remainingMs = context.deadlineAt! - Date.now();
+      if (remainingMs <= 0)
+        throw Object.assign(new Error("tool execution time budget exhausted"), {
+          providerError: timeoutError("tool execution time budget exhausted"),
+        });
       try {
         res = await requestWithTimeout(
           fetchImpl,
@@ -177,12 +177,14 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
             headers,
             body: payload ? JSON.stringify(payload) : undefined,
           },
-          context.timeoutMs,
+          Math.max(1, Math.min(context.timeoutMs, remainingMs)),
         );
       } catch (e) {
         if (
           e instanceof Error &&
-          (e.name === "AbortError" || /abort/i.test(e.message))
+          (e.name === "AbortError" ||
+            e.name === "TimeoutError" ||
+            /abort/i.test(e.message))
         ) {
           throw Object.assign(
             new Error(`upstream timeout after ${context.timeoutMs}ms`),
@@ -271,9 +273,9 @@ export function defineToolAdapter(opts: ToolAdapterOptions): ProviderAdapter {
         return { ok: true, message: "credential valid" };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
-        if (/upstream HTTP (401|403)/.test(msg))
+        if (/upstream HTTP 401/.test(msg))
           return { ok: false, message: "credential rejected" };
-        return { ok: false, message: msg };
+        return { ok: false, definitive: false, message: msg };
       }
     },
 
@@ -345,9 +347,12 @@ export async function pollCrawlJob<T>(
     10_000,
     Math.min(opts.timeoutMs ?? call.context.timeoutMs, 120_000),
   );
-  const deadline = Date.now() + budgetMs;
+  const deadline = Math.min(
+    Date.now() + budgetMs,
+    call.context.deadlineAt ?? Infinity,
+  );
   for (;;) {
-    if (Date.now() > deadline) {
+    if (Date.now() >= deadline) {
       throw Object.assign(
         new Error(`crawl ${jobId} did not finish within ${budgetMs}ms`),
         {
@@ -355,7 +360,9 @@ export async function pollCrawlJob<T>(
         },
       );
     }
-    await new Promise((r) => setTimeout(r, pollMs));
+    await new Promise((r) =>
+      setTimeout(r, Math.min(pollMs, Math.max(0, deadline - Date.now()))),
+    );
     const { json } = await call.get<T>(`/v2/crawl/${jobId}`);
     const status = String(
       (json as Record<string, unknown>).status ?? "",

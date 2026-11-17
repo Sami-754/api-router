@@ -44,7 +44,7 @@ function minRemainingFraction(quotas: QuotaWindow[]): number | null {
 }
 
 /** Urgency rises as reset approaches: 1 at reset, decaying over ~30 days. */
-export function resetUrgency(msUntilResetValue: number | null): number {
+function resetUrgency(msUntilResetValue: number | null): number {
   if (msUntilResetValue == null) return 0.2; // unknown reset → mild baseline
   const days = msUntilResetValue / 86_400_000;
   if (days <= 0) return 1;

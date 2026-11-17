@@ -6,13 +6,14 @@
    executable routes (`provider × account × credential × provider_resource`).
 2. **Hard eligibility** — remove routes that cannot serve the request.
 3. **Policy scoring** — rank the survivors.
-4. **Key rotation** — within each provider, eligible credentials take turns.
-   Request N starts at the next key in a stable ring. Provider order is still
-   the score order.
+4. **Key rotation** — rotate equal-scored credentials within a provider.
+   Keep higher scores ahead of lower scores. An explicit provider pin is
+   tried first, including when cross-provider fallback is enabled.
 5. **Execution** — run that key's adapter against the provider base URL.
 6. **Accounting** — health, usage, quota, request log.
-7. **Fallback** — on a limit, auth failure, or upstream error, try the next
-   key of that provider, then the next provider if the model is mapped there.
+7. **Fallback** — recheck eligibility and try the next ranked route when
+   the adapter classifies the failure as retryable. Auth failures may use
+   another key. Respect both the attempt limit and the total time budget.
 
 Eligibility and scoring are separate stages on purpose: a route is never
 "slightly ineligible", and scoring never silently excludes a route.
@@ -24,7 +25,7 @@ Eligibility and scoring are separate stages on purpose: a route is never
 - account disabled
 - credential not `active`
 - provider resource disabled
-- capability unsupported by the route
+- capability unsupported by the route or registered adapter
 - no adapter registered for the provider
 - request exceeds known context (`requestedTokens > contextTokens`)
 - cooldown active (`cooldownUntil` in the future)
@@ -50,18 +51,21 @@ in `src/core/policies.ts` and is deliberately not persisted — tune freely.
 
 ## Fallback semantics
 
-Every provider's keys rotate the same way. A request starts on the next
-eligible key for that provider and, if that key fails, walks the rest of
-the pool (capped at `maxAttempts`, 64).
+The execution order preserves routing-policy scores. Only equal-scored
+routes rotate; use `priority` for rotation based on configured provider
+order rather than measured health or quota. Attempts are capped at
+`maxAttempts` (64 by default) and share one execution budget (60 seconds
+by default). HTTP deadlines remain active through response-body reads.
 
-- **Auto request**: after a provider's keys are exhausted, may fall back to
-  another provider that maps the same canonical resource.
+- **Auto request**: may fall back across providers in score order.
 - **Provider-pinned**: stays on that provider's keys. Cross-provider fallback
   requires `allowCrossProviderFallback: true`.
 - **Credential-pinned**: exactly one attempt, no substitution.
 
-Key failures try the next key: `auth` (401/403), `rate_limit`,
-`quota_exhausted`, `provider_unavailable`, `timeout`, `network`, `unknown`.
+Retryable key failures try the next route: `rate_limit`, `quota_exhausted`,
+`provider_unavailable`, `timeout`, `network`. `unknown` errors retry only
+when the adapter explicitly marks them retryable. Auth errors may try
+another credential even when retrying the same credential would not help.
 A 401 also marks that credential `invalid`. A 403 cools the key down for 10
 minutes and leaves it in the pool.
 
@@ -80,3 +84,21 @@ failures, latency EMA, last error class, `cooldownUntil`. Defaults:
 
 An expired cooldown is replaced the next time that key fails. It does not
 keep the old timestamp.
+
+## Quota resets and aliases
+
+Rate-policy scores use current-window usage, matching eligibility checks.
+Configured calendar windows with an explicit `resetAt` renew when that
+timestamp passes, carrying forward only usage from the new window.
+Provider-reported credit balances and fixed expiry windows remain
+conservative until a fresh observation; the router does not assume a refill.
+
+`auto:free` executable routes use their source mapping's scoped quotas,
+health, capabilities and context limit. Disabling the source makes the alias
+ineligible immediately. Alias refresh preserves unchanged rows and source
+accounting state.
+
+Request history records each attempted route, including failures before a
+successful fallback. Streams commit on the first normalized chunk and never
+fall back after commitment. Empty streams may fall back; streams closed
+without a completion marker are logged as failures.

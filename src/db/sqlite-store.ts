@@ -47,11 +47,130 @@ function parseJson<T>(raw: unknown, fallback: T): T {
   }
 }
 
+function mapProvider(row: Record<string, unknown>): Provider {
+  return {
+    id: String(row.id),
+    displayName: String(row.display_name),
+    baseUrl: (row.base_url as string | null) ?? null,
+    enabled: unbool(row.enabled),
+    priority: Number(row.priority),
+    metadata: parseJson(row.metadata, undefined),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapAccount(row: Record<string, unknown>): Account {
+  return {
+    id: String(row.id),
+    providerId: String(row.provider_id),
+    displayName: (row.display_name as string | null) ?? null,
+    enabled: unbool(row.enabled),
+    metadata: parseJson(row.metadata, undefined),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapCredential(row: Record<string, unknown>): Credential {
+  return {
+    id: String(row.id),
+    accountId: String(row.account_id),
+    providerId: String(row.provider_id),
+    label: (row.label as string | null) ?? null,
+    secretEncrypted: String(row.secret_encrypted),
+    status: row.status as Credential["status"],
+    lastValidatedAt: (row.last_validated_at as string | null) ?? null,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapResource(row: Record<string, unknown>): Resource {
+  return {
+    id: String(row.id),
+    kind: row.kind as Resource["kind"],
+    displayName: String(row.display_name),
+    capabilities: parseJson<Capability[]>(row.capabilities, []),
+    contextTokens: (row.context_tokens as number | null) ?? null,
+    metadata: parseJson(row.metadata, undefined),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapProviderResource(row: Record<string, unknown>): ProviderResource {
+  return {
+    id: String(row.id),
+    resourceId: String(row.resource_id),
+    providerId: String(row.provider_id),
+    upstreamId: String(row.upstream_id),
+    capabilities: parseJson<Capability[]>(row.capabilities, []),
+    contextTokens: (row.context_tokens as number | null) ?? null,
+    enabled: unbool(row.enabled),
+    metadata: parseJson(row.metadata, undefined),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapQuotaWindow(row: Record<string, unknown>): QuotaWindow {
+  return {
+    id: String(row.id),
+    credentialId: String(row.credential_id),
+    providerResourceId: (row.provider_resource_id as string | null) ?? null,
+    metric: row.metric as QuotaWindow["metric"],
+    limitValue: Number(row.limit_value),
+    usedValue: Number(row.used_value),
+    remainingValue:
+      row.remaining_value == null ? null : Number(row.remaining_value),
+    windowKind: row.window_kind as QuotaWindow["windowKind"],
+    windowSeconds: (row.window_seconds as number | null) ?? null,
+    windowStartedAt: (row.window_started_at as string | null) ?? null,
+    resetAt: (row.reset_at as string | null) ?? null,
+    hard: unbool(row.hard),
+    source: row.source as QuotaWindow["source"],
+    confidence: (row.confidence as number | null) ?? null,
+    observedAt: String(row.observed_at),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function mapRequestLog(row: Record<string, unknown>): RequestLog {
+  return {
+    id: String(row.id),
+    requestedResourceId: String(row.requested_resource_id),
+    requestedCapability:
+      (row.requested_capability as RequestLog["requestedCapability"]) ?? null,
+    providerPin: (row.provider_pin as string | null) ?? null,
+    accountPin: (row.account_pin as string | null) ?? null,
+    credentialPin: (row.credential_pin as string | null) ?? null,
+    policy: String(row.policy),
+    selectedProviderId: (row.selected_provider_id as string | null) ?? null,
+    selectedAccountId: (row.selected_account_id as string | null) ?? null,
+    selectedCredentialId: (row.selected_credential_id as string | null) ?? null,
+    selectedUpstreamId: (row.selected_upstream_id as string | null) ?? null,
+    selectionReason: (row.selection_reason as string | null) ?? null,
+    attempts: Number(row.attempts),
+    status: row.status as RequestLog["status"],
+    errorClass: (row.error_class as RequestLog["errorClass"]) ?? null,
+    errorMessage: (row.error_message as string | null) ?? null,
+    latencyMs: Number(row.latency_ms),
+    promptTokens: (row.prompt_tokens as number | null) ?? null,
+    completionTokens: (row.completion_tokens as number | null) ?? null,
+    totalTokens: (row.total_tokens as number | null) ?? null,
+    createdAt: String(row.created_at),
+  };
+}
+
 export function openDatabase(path: string): Database.Database {
   mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
+  db.pragma("busy_timeout = 5000");
+  db.pragma("synchronous = NORMAL");
   db.exec(SCHEMA_SQL);
   return db;
 }
@@ -86,32 +205,14 @@ export class SqliteStore implements Store {
       .prepare(`SELECT * FROM providers WHERE id = ?`)
       .get(id.toLowerCase()) as Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return {
-      id: String(r.id),
-      displayName: String(r.display_name),
-      baseUrl: (r.base_url as string | null) ?? null,
-      enabled: unbool(r.enabled),
-      priority: Number(r.priority),
-      metadata: parseJson(r.metadata, undefined),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    };
+    return mapProvider(r);
   }
 
   listProviders(): Provider[] {
     const rows = this.db
       .prepare(`SELECT * FROM providers ORDER BY priority ASC, id ASC`)
       .all() as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: String(r.id),
-      displayName: String(r.display_name),
-      baseUrl: (r.base_url as string | null) ?? null,
-      enabled: unbool(r.enabled),
-      priority: Number(r.priority),
-      metadata: parseJson(r.metadata, undefined),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    }));
+    return rows.map(mapProvider);
   }
 
   deleteProvider(id: string): void {
@@ -122,6 +223,11 @@ export class SqliteStore implements Store {
   upsertAccount(a: Omit<Account, "createdAt" | "updatedAt">): Account {
     const now = nowIso();
     const existing = this.getAccount(a.id);
+    if (existing && existing.providerId !== a.providerId.toLowerCase()) {
+      throw new Error(
+        "an existing account cannot be moved to a different provider",
+      );
+    }
     this.db
       .prepare(
         `INSERT INTO accounts (id, provider_id, display_name, enabled, metadata, created_at, updated_at)
@@ -143,15 +249,7 @@ export class SqliteStore implements Store {
     const r = this.db.prepare(`SELECT * FROM accounts WHERE id = ?`).get(id) as
       Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return {
-      id: String(r.id),
-      providerId: String(r.provider_id),
-      displayName: (r.display_name as string | null) ?? null,
-      enabled: unbool(r.enabled),
-      metadata: parseJson(r.metadata, undefined),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    };
+    return mapAccount(r);
   }
 
   listAccounts(providerId?: string): Account[] {
@@ -163,15 +261,7 @@ export class SqliteStore implements Store {
           string,
           unknown
         >[]);
-    return rows.map((r) => ({
-      id: String(r.id),
-      providerId: String(r.provider_id),
-      displayName: (r.display_name as string | null) ?? null,
-      enabled: unbool(r.enabled),
-      metadata: parseJson(r.metadata, undefined),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    }));
+    return rows.map(mapAccount);
   }
 
   deleteAccount(id: string): void {
@@ -207,17 +297,7 @@ export class SqliteStore implements Store {
       .prepare(`SELECT * FROM credentials WHERE id = ?`)
       .get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return {
-      id: String(r.id),
-      accountId: String(r.account_id),
-      providerId: String(r.provider_id),
-      label: (r.label as string | null) ?? null,
-      secretEncrypted: String(r.secret_encrypted),
-      status: r.status as Credential["status"],
-      lastValidatedAt: (r.last_validated_at as string | null) ?? null,
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    };
+    return mapCredential(r);
   }
 
   listCredentials(accountId?: string): Credential[] {
@@ -228,17 +308,7 @@ export class SqliteStore implements Store {
       : (this.db
           .prepare(`SELECT * FROM credentials ORDER BY id`)
           .all() as Record<string, unknown>[]);
-    return rows.map((r) => ({
-      id: String(r.id),
-      accountId: String(r.account_id),
-      providerId: String(r.provider_id),
-      label: (r.label as string | null) ?? null,
-      secretEncrypted: String(r.secret_encrypted),
-      status: r.status as Credential["status"],
-      lastValidatedAt: (r.last_validated_at as string | null) ?? null,
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    }));
+    return rows.map(mapCredential);
   }
 
   updateCredentialStatus(id: string, status: Credential["status"]): void {
@@ -247,10 +317,16 @@ export class SqliteStore implements Store {
       .run(status, nowIso(), id);
   }
 
+  updateCredentialLabel(id: string, label: string | null): void {
+    this.db
+      .prepare(`UPDATE credentials SET label = ?, updated_at = ? WHERE id = ?`)
+      .run(label, nowIso(), id);
+  }
+
   markCredentialValidated(id: string, ok: boolean): void {
     this.db
       .prepare(
-        `UPDATE credentials SET status = ?, last_validated_at = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE credentials SET status = CASE WHEN status = 'disabled' THEN status ELSE ? END, last_validated_at = ?, updated_at = ? WHERE id = ?`,
       )
       .run(ok ? "active" : "invalid", nowIso(), nowIso(), id);
   }
@@ -290,32 +366,37 @@ export class SqliteStore implements Store {
       .prepare(`SELECT * FROM resources WHERE id = ?`)
       .get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return {
-      id: String(r.id),
-      kind: r.kind as Resource["kind"],
-      displayName: String(r.display_name),
-      capabilities: parseJson<Capability[]>(r.capabilities, []),
-      contextTokens: (r.context_tokens as number | null) ?? null,
-      metadata: parseJson(r.metadata, undefined),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    };
+    return mapResource(r);
+  }
+
+  resolveResourceByModel(
+    logicalModel: string,
+    providerPin?: string | null,
+  ): Resource | undefined {
+    const canonicalId = `llm:model:${logicalModel.toLowerCase()}`;
+    const direct = this.getResource(canonicalId);
+    if (direct) return direct;
+
+    let sql = `SELECT resource_id FROM provider_resources WHERE LOWER(upstream_id) = ?`;
+    const params: string[] = [logicalModel.toLowerCase()];
+    if (providerPin) {
+      sql += ` AND provider_id = ?`;
+      params.push(providerPin.toLowerCase());
+    }
+    sql += ` ORDER BY enabled DESC LIMIT 1`;
+    const row = this.db.prepare(sql).get(...params) as
+      { resource_id: string } | undefined;
+    if (row) {
+      return this.getResource(row.resource_id);
+    }
+    return undefined;
   }
 
   listResources(): Resource[] {
     const rows = this.db
       .prepare(`SELECT * FROM resources ORDER BY id`)
       .all() as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: String(r.id),
-      kind: r.kind as Resource["kind"],
-      displayName: String(r.display_name),
-      capabilities: parseJson<Capability[]>(r.capabilities, []),
-      contextTokens: (r.context_tokens as number | null) ?? null,
-      metadata: parseJson(r.metadata, undefined),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    }));
+    return rows.map(mapResource);
   }
 
   // ---------- provider resources ----------
@@ -357,18 +438,7 @@ export class SqliteStore implements Store {
       .prepare(`SELECT * FROM provider_resources WHERE id = ?`)
       .get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return {
-      id: String(r.id),
-      resourceId: String(r.resource_id),
-      providerId: String(r.provider_id),
-      upstreamId: String(r.upstream_id),
-      capabilities: parseJson<Capability[]>(r.capabilities, []),
-      contextTokens: (r.context_tokens as number | null) ?? null,
-      enabled: unbool(r.enabled),
-      metadata: parseJson(r.metadata, undefined),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    };
+    return mapProviderResource(r);
   }
 
   listProviderResources(
@@ -389,18 +459,7 @@ export class SqliteStore implements Store {
     if (conds.length) sql += ` WHERE ` + conds.join(" AND ");
     sql += ` ORDER BY resource_id, provider_id, upstream_id`;
     const rows = this.db.prepare(sql).all(...args) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: String(r.id),
-      resourceId: String(r.resource_id),
-      providerId: String(r.provider_id),
-      upstreamId: String(r.upstream_id),
-      capabilities: parseJson<Capability[]>(r.capabilities, []),
-      contextTokens: (r.context_tokens as number | null) ?? null,
-      enabled: unbool(r.enabled),
-      metadata: parseJson(r.metadata, undefined),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    }));
+    return rows.map(mapProviderResource);
   }
 
   setProviderResourceEnabled(id: string, enabled: boolean): void {
@@ -433,8 +492,15 @@ export class SqliteStore implements Store {
     }
     const out: Route[] = [];
     for (const pr of prs) {
-      if (capability && !(pr.capabilities as string[]).includes(capability))
-        continue;
+      const aliasOf = pr.metadata?.aliasOf;
+      const source =
+        typeof aliasOf === "string" ? this.getProviderResource(aliasOf) : pr;
+      const validSource =
+        source &&
+        source.providerId === pr.providerId &&
+        source.upstreamId === pr.upstreamId;
+      const capabilities = validSource ? source.capabilities : [];
+      if (capability && !capabilities.includes(capability)) continue;
       const provider = providers.get(pr.providerId);
       if (!provider) continue;
       for (const account of accountsByProvider.get(pr.providerId) ?? []) {
@@ -444,14 +510,15 @@ export class SqliteStore implements Store {
             providerId: pr.providerId,
             accountId: account.id,
             credentialId: cred.id,
-            providerResourceId: pr.id,
+            providerResourceId: validSource ? source.id : pr.id,
             resourceId: pr.resourceId,
             upstreamId: pr.upstreamId,
-            capabilities: pr.capabilities,
+            capabilities,
             providerEnabled: provider.enabled,
             accountEnabled: account.enabled,
             credentialStatus: cred.status,
-            providerResourceEnabled: pr.enabled,
+            providerResourceEnabled:
+              pr.enabled && Boolean(validSource && source.enabled),
             providerPriority: provider.priority,
           });
         }
@@ -509,26 +576,16 @@ export class SqliteStore implements Store {
       : (this.db
           .prepare(`SELECT * FROM quota_windows ORDER BY reset_at ASC`)
           .all() as Record<string, unknown>[]);
-    return rows.map((r) => ({
-      id: String(r.id),
-      credentialId: String(r.credential_id),
-      providerResourceId: (r.provider_resource_id as string | null) ?? null,
-      metric: r.metric as QuotaWindow["metric"],
-      limitValue: Number(r.limit_value),
-      usedValue: Number(r.used_value),
-      remainingValue:
-        r.remaining_value == null ? null : Number(r.remaining_value),
-      windowKind: r.window_kind as QuotaWindow["windowKind"],
-      windowSeconds: (r.window_seconds as number | null) ?? null,
-      windowStartedAt: (r.window_started_at as string | null) ?? null,
-      resetAt: (r.reset_at as string | null) ?? null,
-      hard: unbool(r.hard),
-      source: r.source as QuotaWindow["source"],
-      confidence: (r.confidence as number | null) ?? null,
-      observedAt: String(r.observed_at),
-      createdAt: String(r.created_at),
-      updatedAt: String(r.updated_at),
-    }));
+    return rows.map(mapQuotaWindow);
+  }
+
+  listQuotaWindowsForCredentials(credentialIds: string[]): QuotaWindow[] {
+    return this.queryByCredentialIds(
+      "SELECT * FROM quota_windows WHERE credential_id IN",
+      "ORDER BY reset_at ASC",
+      credentialIds,
+      mapQuotaWindow,
+    );
   }
 
   deleteQuotaWindow(id: string): void {
@@ -584,6 +641,38 @@ export class SqliteStore implements Store {
       .get(credentialId, key) as Record<string, unknown> | undefined;
     if (!row) return undefined;
     return mapHealth(row);
+  }
+
+  listHealthForCredentials(credentialIds: string[]): HealthSnapshot[] {
+    return this.queryByCredentialIds(
+      "SELECT * FROM health_snapshots WHERE credential_id IN",
+      "",
+      credentialIds,
+      mapHealth,
+    );
+  }
+
+  private queryByCredentialIds<T>(
+    prefix: string,
+    suffix: string,
+    credentialIds: string[],
+    map: (row: Record<string, unknown>) => T,
+  ): T[] {
+    const ids = [...new Set(credentialIds)];
+    if (!ids.length) return [];
+    const out: T[] = [];
+    // SQLite's default host-parameter limit is 999; stay comfortably below it.
+    for (let index = 0; index < ids.length; index += 500) {
+      const chunk = ids.slice(index, index + 500);
+      const placeholders = chunk.map(() => "?").join(",");
+      const sql = `${prefix} (${placeholders})${suffix ? ` ${suffix}` : ""}`;
+      const rows = this.db.prepare(sql).all(...chunk) as Record<
+        string,
+        unknown
+      >[];
+      out.push(...rows.map(map));
+    }
+    return out;
   }
 
   keyCooldownUntil(
@@ -808,30 +897,7 @@ export class SqliteStore implements Store {
     const rows = this.db
       .prepare(`SELECT * FROM request_logs ORDER BY created_at DESC LIMIT ?`)
       .all(limit) as Record<string, unknown>[];
-    return rows.map((r) => ({
-      id: String(r.id),
-      requestedResourceId: String(r.requested_resource_id),
-      requestedCapability:
-        (r.requested_capability as RequestLog["requestedCapability"]) ?? null,
-      providerPin: (r.provider_pin as string | null) ?? null,
-      accountPin: (r.account_pin as string | null) ?? null,
-      credentialPin: (r.credential_pin as string | null) ?? null,
-      policy: String(r.policy),
-      selectedProviderId: (r.selected_provider_id as string | null) ?? null,
-      selectedAccountId: (r.selected_account_id as string | null) ?? null,
-      selectedCredentialId: (r.selected_credential_id as string | null) ?? null,
-      selectedUpstreamId: (r.selected_upstream_id as string | null) ?? null,
-      selectionReason: (r.selection_reason as string | null) ?? null,
-      attempts: Number(r.attempts),
-      status: r.status as RequestLog["status"],
-      errorClass: (r.error_class as RequestLog["errorClass"]) ?? null,
-      errorMessage: (r.error_message as string | null) ?? null,
-      latencyMs: Number(r.latency_ms),
-      promptTokens: (r.prompt_tokens as number | null) ?? null,
-      completionTokens: (r.completion_tokens as number | null) ?? null,
-      totalTokens: (r.total_tokens as number | null) ?? null,
-      createdAt: String(r.created_at),
-    }));
+    return rows.map(mapRequestLog);
   }
 
   getRequestLog(id: string): RequestLog | undefined {
@@ -839,29 +905,6 @@ export class SqliteStore implements Store {
       .prepare(`SELECT * FROM request_logs WHERE id = ?`)
       .get(id) as Record<string, unknown> | undefined;
     if (!r) return undefined;
-    return {
-      id: String(r.id),
-      requestedResourceId: String(r.requested_resource_id),
-      requestedCapability:
-        (r.requested_capability as RequestLog["requestedCapability"]) ?? null,
-      providerPin: (r.provider_pin as string | null) ?? null,
-      accountPin: (r.account_pin as string | null) ?? null,
-      credentialPin: (r.credential_pin as string | null) ?? null,
-      policy: String(r.policy),
-      selectedProviderId: (r.selected_provider_id as string | null) ?? null,
-      selectedAccountId: (r.selected_account_id as string | null) ?? null,
-      selectedCredentialId: (r.selected_credential_id as string | null) ?? null,
-      selectedUpstreamId: (r.selected_upstream_id as string | null) ?? null,
-      selectionReason: (r.selection_reason as string | null) ?? null,
-      attempts: Number(r.attempts),
-      status: r.status as RequestLog["status"],
-      errorClass: (r.error_class as RequestLog["errorClass"]) ?? null,
-      errorMessage: (r.error_message as string | null) ?? null,
-      latencyMs: Number(r.latency_ms),
-      promptTokens: (r.prompt_tokens as number | null) ?? null,
-      completionTokens: (r.completion_tokens as number | null) ?? null,
-      totalTokens: (r.total_tokens as number | null) ?? null,
-      createdAt: String(r.created_at),
-    };
+    return mapRequestLog(r);
   }
 }

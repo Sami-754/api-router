@@ -1,28 +1,14 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Store } from "../core/store.js";
-import { Router } from "../core/router.js";
-import type { ProviderRegistry } from "../provider-sdk/registry.js";
+import type { AppDeps } from "./deps.js";
 import { registerLlmRoutes } from "./routes/llm.js";
 import { registerToolRoutes } from "./routes/tools.js";
 import { registerProtocolRoutes } from "./routes/protocols.js";
 import { registerManagementRoutes } from "./routes/management.js";
-
-export interface RuntimeSettings {
-  defaultPolicy: string;
-}
-
-export interface AppDeps {
-  store: Store;
-  registry: ProviderRegistry;
-  router: Router;
-  settings: RuntimeSettings;
-  fetchImpl?: typeof fetch;
-}
 
 export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const app = Fastify({
@@ -44,48 +30,71 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     version: "0.1.0",
   }));
 
-  // Dashboard UI (static, no build step). Local-first single-user service:
-  // no auth — bind to loopback / trust the local network instead.
-  const publicDir = resolve(
-    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "public"),
+  // Dashboard UI (React/Vite build in web/dist). Local-first single-user
+  // service: no auth — bind to loopback / trust the local network instead.
+  const webDist = resolve(
+    join(dirname(fileURLToPath(import.meta.url)), "..", "..", "web", "dist"),
   );
   const MIME: Record<string, string> = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".woff2": "font/woff2",
+    ".woff": "font/woff",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".ico": "image/x-icon",
+    ".json": "application/json; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".map": "application/json; charset=utf-8",
   };
-  const servePublic = (rel: string) => {
-    const abs = resolve(join(publicDir, rel));
-    if (!abs.startsWith(publicDir + sep) && abs !== publicDir)
+  const notBuilt = (reply: FastifyReply) =>
+    reply.code(404).send({
+      error: {
+        message: "dashboard not built — run pnpm web:build",
+        type: "not_found",
+        code: 404,
+      },
+    });
+  const serveDashboard = (rel: string) => {
+    const clean = rel.replace(/^\/+/, "") || "index.html";
+    const abs = resolve(join(webDist, clean));
+    if (!abs.startsWith(webDist + sep) && abs !== webDist)
       throw new Error("bad path");
     const ext = abs.slice(abs.lastIndexOf("."));
-    return { abs, mime: MIME[ext] ?? "application/octet-stream" };
+    return { abs, mime: MIME[ext] ?? "application/octet-stream", ext };
   };
   app.get("/dashboard", async (_req, reply) => {
+    if (!existsSync(join(webDist, "index.html"))) return notBuilt(reply);
     try {
-      const { abs, mime } = servePublic("index.html");
-      return reply.type(mime).send(readFileSync(abs));
+      const { abs, mime } = serveDashboard("index.html");
+      return reply
+        .header("cache-control", "no-store")
+        .type(mime)
+        .send(readFileSync(abs));
     } catch {
-      return reply.code(404).send({
-        error: {
-          message: "dashboard not built",
-          type: "not_found",
-          code: 404,
-        },
-      });
+      return notBuilt(reply);
     }
   });
-  app.get("/dashboard/:file", async (req, reply) => {
-    const { file } = req.params as { file: string };
-    if (!/^[a-z0-9_-]+\.(js|css|svg)$/i.test(file)) {
-      return reply.code(404).send({
-        error: { message: "not found", type: "not_found", code: 404 },
-      });
-    }
+  app.get("/dashboard/*", async (req, reply) => {
+    const rel = (req.params as { "*": string })["*"] ?? "";
+    if (!existsSync(join(webDist, "index.html"))) return notBuilt(reply);
     try {
-      const { abs, mime } = servePublic(file);
-      return reply.type(mime).send(readFileSync(abs));
+      const { abs, mime, ext } = serveDashboard(rel);
+      if (!existsSync(abs)) {
+        return reply.code(404).send({
+          error: { message: "not found", type: "not_found", code: 404 },
+        });
+      }
+      const cache =
+        ext === ".html" ? "no-store" : "public, max-age=31536000, immutable";
+      return reply
+        .header("cache-control", cache)
+        .type(mime)
+        .send(readFileSync(abs));
     } catch {
       return reply.code(404).send({
         error: { message: "not found", type: "not_found", code: 404 },

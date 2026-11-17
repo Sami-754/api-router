@@ -6,11 +6,13 @@ import { ProviderRegistry } from "../provider-sdk/registry.js";
 import { Router } from "../core/router.js";
 import type { RoutingPolicyName } from "../shared/types.js";
 import { OpenAICompatibleAdapter } from "../adapters/openai-compatible.js";
-import { ExaAdapter } from "../adapters/exa.js";
-import { TavilyAdapter } from "../adapters/tavily.js";
-import { FirecrawlAdapter } from "../adapters/firecrawl.js";
 import { syncProviderModels } from "./free-models.js";
 import { buildApp } from "./app.js";
+import {
+  TOOL_PROVIDERS,
+  createToolAdapter,
+  ensureToolResources,
+} from "./tool-catalog.js";
 
 export interface BootOptions {
   databasePath?: string;
@@ -48,9 +50,9 @@ export async function boot(opts: BootOptions = {}) {
   const baseUrls: Record<string, string> = {
     groq: "https://api.groq.com/openai/v1",
     openrouter: "https://openrouter.ai/api/v1",
-    exa: "https://api.exa.ai",
-    tavily: "https://api.tavily.com",
-    firecrawl: "https://api.firecrawl.dev",
+    ...Object.fromEntries(
+      Object.values(TOOL_PROVIDERS).map((tool) => [tool.id, tool.baseUrl]),
+    ),
   };
   for (const p of store.listProviders()) {
     if (p.baseUrl) baseUrls[p.id] = p.baseUrl;
@@ -58,10 +60,8 @@ export async function boot(opts: BootOptions = {}) {
     // filtered as "no adapter" instead of failing at execution time.
     if (!registry.get(p.id) && (p.baseUrl || baseUrls[p.id])) {
       const base = (p.baseUrl ?? baseUrls[p.id]) as string;
-      if (p.id === "exa") registry.register(new ExaAdapter(base));
-      else if (p.id === "tavily") registry.register(new TavilyAdapter(base));
-      else if (p.id === "firecrawl")
-        registry.register(new FirecrawlAdapter(base));
+      const toolAdapter = createToolAdapter(p.id, base);
+      if (toolAdapter) registry.register(toolAdapter);
       else {
         registry.register(
           new OpenAICompatibleAdapter({
@@ -112,33 +112,6 @@ export async function boot(opts: BootOptions = {}) {
   });
 
   return { app, config, store, registry, router, db };
-}
-
-/**
- * Capability resources for the generic tool path. Runs on every boot
- * (idempotent) — unlike seedDemo, which returns early once providers exist.
- * Provider mappings (exa/tavily/…) are added with credentials; nothing routes
- * until a mapping row exists for that provider.
- */
-const TOOL_RESOURCES: Array<{ id: string; displayName: string }> = [
-  { id: "web.search", displayName: "Web search" },
-  { id: "web.scrape", displayName: "Web scrape" },
-  { id: "web.extract", displayName: "Web extract" },
-  { id: "web.crawl", displayName: "Web crawl" },
-  { id: "web.map", displayName: "Web map" },
-];
-
-function ensureToolResources(store: SqliteStore): void {
-  for (const t of TOOL_RESOURCES) {
-    if (!store.getResource(t.id)) {
-      store.upsertResource({
-        id: t.id,
-        kind: "capability",
-        displayName: t.displayName,
-        capabilities: [t.id as "web.search"],
-      });
-    }
-  }
 }
 
 /** Minimal demo seed: canonical model + two provider mappings. Idempotent. */
@@ -192,17 +165,6 @@ function seedDemo(store: SqliteStore): void {
     displayName: "OpenRouter main",
     enabled: true,
   });
-
-  // Generic tool capability — same routing core as LLMs. Provider mappings
-  // (exa/tavily/…) are added with credentials; nothing to seed without keys.
-  if (!store.getResource("web.search")) {
-    store.upsertResource({
-      id: "web.search",
-      kind: "capability",
-      displayName: "Web search",
-      capabilities: ["web.search"],
-    });
-  }
 
   // Optional: import demo credentials from env (never committed).
   const groqKey = process.env.GROQ_API_KEY;

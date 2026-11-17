@@ -11,7 +11,7 @@ import { routingHintsFromHeaders } from "../../shared/model-string.js";
 import type { Capability, RoutingPolicyName } from "../../shared/types.js";
 import { RouterError, type Router } from "../../core/router.js";
 import type { NormalizedRequest } from "../../provider-sdk/types.js";
-import type { AppDeps } from "../app.js";
+import type { AppDeps } from "../deps.js";
 
 // Generic tool path — same routing core as LLMs, capability-addressed.
 // Provider pin via body.routing.provider or X-Router-Provider header.

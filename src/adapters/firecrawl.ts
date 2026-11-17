@@ -44,7 +44,7 @@ async function scrapeOne(
 
 const probe = { path: "/v2/search", body: () => ({ query: "test", limit: 1 }) };
 
-export const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
+const firecrawlAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
   defineToolAdapter({
     providerId: "firecrawl",
     displayName: "Firecrawl",

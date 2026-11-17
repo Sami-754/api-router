@@ -204,7 +204,10 @@ describe("per-provider key rotation", () => {
       app.inject({
         method: "POST",
         url: "/v1/chat/completions",
-        payload: chatBody("groq::nemotron-3-super-120b"),
+        payload: {
+          ...chatBody("groq::nemotron-3-super-120b"),
+          routing: { policy: "priority" },
+        },
       });
     expect((await send()).statusCode).toBe(200);
     expect((await send()).statusCode).toBe(200);
@@ -321,5 +324,122 @@ describe("per-provider key rotation", () => {
     });
     expect(res.statusCode).toBe(429);
     expect(n).toBe(5);
+  });
+
+  it("resolves provider upstream model ID to canonical resource", async () => {
+    const { app } = await createTestSetup();
+    // Upstream ID is "nvidia/nemotron-3-super-120b", mapped to canonical "nemotron-3-super-120b".
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: chatBody("groq::nvidia/nemotron-3-super-120b"),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-router-via"]).toMatch(/^groq\//);
+    expect(res.json()._router.provider).toBe("groq");
+  });
+
+  it("supports messages with null content and tool_calls, preserving tool_calls in response", async () => {
+    const mockToolResponse: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          id: "chatcmpl-mock",
+          object: "chat.completion",
+          created: 12345,
+          model: "nvidia/nemotron-3-super-120b",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: null,
+                tool_calls: [
+                  {
+                    id: "call_abc123",
+                    type: "function",
+                    function: {
+                      name: "get_weather",
+                      arguments: '{"city":"Tokyo"}',
+                    },
+                  },
+                ],
+              },
+              finish_reason: "tool_calls",
+            },
+          ],
+          usage: { prompt_tokens: 15, completion_tokens: 20, total_tokens: 35 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    const { app } = await createTestSetup({ fetchImpl: mockToolResponse });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        model: "nemotron-3-super-120b",
+        messages: [
+          { role: "user", content: "What is the weather in Tokyo?" },
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [
+              {
+                id: "call_abc123",
+                type: "function",
+                function: {
+                  name: "get_weather",
+                  arguments: '{"city":"Tokyo"}',
+                },
+              },
+            ],
+          },
+          {
+            role: "tool",
+            tool_call_id: "call_abc123",
+            content: '{"temp":"22C"}',
+          },
+        ],
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const json = res.json();
+    expect(json.choices[0].finish_reason).toBe("tool_calls");
+    expect(json.choices[0].message.tool_calls).toHaveLength(1);
+    expect(json.choices[0].message.tool_calls[0].id).toBe("call_abc123");
+  });
+
+  it("treats bare HTTP 402 as quota_exhausted and falls back", async () => {
+    let attempts = 0;
+    const mockPaymentRequired: typeof fetch = async (url) => {
+      attempts++;
+      if (String(url).includes("groq")) {
+        // Bare 402 with no body keywords
+        return new Response("Payment Required", { status: 402 });
+      }
+      const { chatJson } = await import("./helpers.js");
+      return new Response(
+        JSON.stringify(chatJson("via-openrouter-after-402")),
+        {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        },
+      );
+    };
+    const { app } = await createTestSetup({ fetchImpl: mockPaymentRequired });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        ...chatBody("nemotron-3-super-120b"),
+        routing: { policy: "priority" },
+      },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["x-router-via"]).toMatch(/^openrouter\//);
+    expect(attempts).toBeGreaterThanOrEqual(2);
   });
 });

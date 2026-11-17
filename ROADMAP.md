@@ -192,17 +192,16 @@ The same provider registry/quota engine handles both LLMs and web tooling.
 
 ## Phase 7 — Dashboard
 
-Core pages:
+Core pages (shipped 2026-11-17):
 
 ```text
-Overview
-Resources
+Dashboard
+Models
 Providers
-Credentials
-Quota
 Requests
-Routing Policies
-Settings
+Playground
+Admin (manual model/route creation)
+Settings drawer
 ```
 
 Important resource detail page:
@@ -237,17 +236,18 @@ Allow:
 
 ## Phase 8 — Protocol coverage
 
-Possible additions:
+Shipped:
 
 - `/v1/responses`
 - streaming
 - tool calls
+- Anthropic-compatible surface
+
+Still deferred:
+
 - embeddings
 - vision
-- Anthropic-compatible surface
 - native provider passthrough where useful
-
-Do not add these before the routing/quota core is stable.
 
 ---
 

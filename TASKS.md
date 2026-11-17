@@ -232,19 +232,21 @@ Under `burn`, A should receive strong preference assuming it is healthy and othe
 
 ---
 
-## P3 — Dashboard (v1 done 2026-09-22, static UI at `/dashboard`)
+## P3 — Dashboard (rebuilt 2026-11-17, React/Vite at `/dashboard`)
 
-- [x] resource list
-- [x] resource detail (per-route quota, reset countdown, health, latency)
-- [x] provider list (+ add/edit/enable/delete)
-- [x] credential management (+ live validate, enable/disable)
-- [x] quota display (+ add/delete)
-- [x] reset countdown
-- [x] routing policy editor (runtime default + per-request simulator)
-- [x] request history (+ detail)
-- [x] test request UI
-- [x] health indicators (cooldown/fails/latency per route)
-- [ ] account display-name editing (minor, skipped)
+- [x] dependency-free UI replaced by `web/` React + Vite + TypeScript
+- [x] six-page IA: Dashboard, Models, Providers, Requests, Playground, Add
+- [x] model list + detail (per-route quota, reset, health, latency, alias handling)
+- [x] provider list + detail (config, accounts, keys, per-key quotas/usage)
+- [x] credential management (+ live validate, enable/disable, label edit)
+- [x] quota display + add/edit/delete on provider keys
+- [x] routing policy editor (runtime default; simulator UI dropped)
+- [x] request history grouped by logical request + attempt-chain drawer
+- [x] playground (chat + search/scrape/extract/crawl/map)
+- [x] dashboard attention feed, quota watch, 24h activity, provider health
+- [x] model sync trigger + adapter list + credential label API
+- [x] key-first Add page: provider → key → label; tool providers auto-provision routes
+- [ ] account display-name editing on its own (edit dialog covers it)
 
 ---
 
@@ -257,4 +259,4 @@ Before marking any milestone complete:
 - [x] errors are normalized (OpenAI envelope + Anthropic shim, tested)
 - [x] new provider adapter has tests (openai-compatible, exa, tavily)
 - [x] `STATE.md` updated
-- [x] API changes documented (`docs/api.md` + dashboard simulator)
+- [x] API changes documented (`docs/api.md`)

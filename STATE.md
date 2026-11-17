@@ -1,5 +1,133 @@
 # STATE.md
 
+## Dashboard rebuild (2026-11-17)
+
+Nuked the dependency-free `public/` dashboard (2,165-line `app.js`, 1,795-line
+CSS, six overlapping pages) and replaced it with **React 19 + Vite + TypeScript**
+in `web/`: Dashboard, Models (+detail), Providers (+detail with accounts/keys/
+quotas), Requests (+attempt-chain drawer), Playground (chat + five web tools),
+Settings drawer. Quotas now live on model routes, provider keys and a dashboard
+quota watch; the standalone Quotas page and simulator UI were dropped.
+Providers/adapters/tools are intentionally backend-only. The Add page is
+key-first: pick a provider, paste the key, label it; known tool adapters
+(Exa/Tavily/Firecrawl) materialize their provider row, main account, capability
+mappings and live adapter automatically. A Model route tab creates a canonical
+LLM model plus its first provider route. Elsewhere the UI adds accounts/keys,
+edits quotas, exposes Add key shortcuts, and inspects/toggles existing routes.
+
+Design: dark ink palette, hairline borders, Geist Sans/Mono bundled locally,
+single indigo accent, dense tables and signal-first dashboard. Native
+`<dialog>` drawers, skeletons/empty/error states, keyboard and mobile support.
+Old UI files deleted; `public/` is gone.
+
+Build/serve: `pnpm build` now runs `vite build web` then server `tsc`;
+output is `web/dist` (gitignored). `src/server/app.ts` serves it at `/dashboard`
+and `/dashboard/*` with traversal guards, no-store HTML and immutable hashed
+assets. Server still boots when `web/dist` is absent (404 "run pnpm web:build").
+New scripts `web:build`, `build:server`, `dev:web`; `typecheck` covers web.
+Local note: this shell exports `NODE_ENV=production`, so use
+`pnpm install --prod=false` when devDependencies are missing.
+
+Backend additions (minimal): `GET /api/adapters` (runtime + installable tool
+adapters), `POST /api/keys` (provider/account/credential + tool mappings),
+`POST /api/maintenance/sync` (single-flight; returns
+mapped/pruned/skipped/autoFreeMappings), credential PATCH accepts `label`
+(`Store.updateCredentialLabel`). Request logs remain per attempt; the UI groups
+them by base id.
+
+Verified: 127 tests, typecheck, lint, web+server build. `api-router.service`
+rebuilt/restarted; `/healthz`, `/dashboard`, `/dashboard/`, `/api/adapters`
+return 200. Browser smoke via Vite proxy covered every page, provider
+accordion, alias coverage (fixed: alias routes carry the source mapping id, so
+the UI matches them by provider+upstream), request drawer, settings and mobile.
+A live Playground call surfaced an upstream 402 correctly. See
+`docs/ui-redesign.md` and `~/.commandcode/plans/ui-nuke-rebuild.md`.
+
+## Cleanup pass (2026-11-17)
+
+Executed safe/high-value items from `docs/CLEANUP_REPORT.md`; exact changes in
+`docs/DELETION_LOG.md`. Removed unused web exports/icons/CSS, the direct `pino`
+dependency and dead `timingSafeCompare`; deduplicated SQLite row mappers;
+batched `/api/routes` quota/health reads (alias route latency ~50-77ms -> ~9-12ms
+locally); added `GET /api/resources/:id` (model detail no longer downloads the
+456 KB resource list); stopped Dashboard polling the 803 KB provider-resource
+list; extracted `AppDeps` to remove type cycles; formatted the repo and fixed
+`format:check` to exclude `web/dist`. Kept `src/server/import-keys.ts`,
+`POST /api/routing/simulate`, backend-only provider creation and the risky
+router execute/stream refactor on purpose. Post-cleanup: 126 tests, typecheck,
+lint, format and build all pass.
+
+## Key-first Add page (2026-11-17)
+
+Replaced the Admin page with **Add** (`/add`): default tab is provider → API key
+→ label. `POST /api/keys` encrypts the key, reuses/creates `provider-main`,
+registers Exa/Tavily/Firecrawl adapters in the live registry when needed, and
+idempotently creates their capability mappings (`web.search/scrape/extract/
+crawl/map`). Provider rows default to the adapter's base URL; boot registration
+was refactored through `src/server/tool-catalog.ts`. Keys are not probed
+automatically (validation spends quota); the provider page owns validation.
+The Model route tab keeps the manual canonical-model/mapping workflow. Tests:
+127 passing; API docs and UI docs updated.
+
+## Logic audit and fixes (2026-10-14)
+
+Audited routing, fallback, quota accounting, alias expansion, model sync,
+credential validation, management mutations and the LLM streaming adapter.
+Baseline: 79 tests. Added 37 regression cases (116 total), reproducing
+policy-order, pin-first, cooldown, retryability, observability, reset,
+alias-state, sync, validation, patch-validation, account-provider integrity,
+secret-redaction and streaming/deadline failures before fixing them.
+
+- Execution preserves score order; only tied keys rotate. `priority` remains
+  the explicit provider-order/key-rotation mode. Provider pins are first even
+  with cross-provider fallback; retry queues recheck current eligibility.
+- Each failed attempt logs its actual route. Unknown non-retryable errors
+  stop; auth failures still rotate to another credential. Adapter capability
+  support is checked in addition to mapping support.
+- Rate-policy scores use live headroom. Configured calendar quotas renew at
+  their explicit reset; provider credits/fixed expiry do not assume a refill.
+- `auto:free` uses source-mapping quota, health, capabilities and context.
+  Sync preserves disabled mappings, custom canonicals and tools; failed or
+  malformed discovery does not prune existing mappings. Alias refresh keeps
+  unchanged rows rather than deleting and recreating them.
+- Inconclusive probes preserve credential status/freshness; disabled keys
+  stay disabled after validation. Dashboard reports inconclusive results.
+- Invalid management patches return 400; account provider reassignment
+  returns 409. Echoed upstream secrets are redacted in errors/history.
+- Stream errors read their HTTP bodies; empty/malformed upstream completions
+  may fall back. Truncated streams are failures. Body reads keep their timeout,
+  and fallback attempts share the execution budget. Context eligibility no
+  longer trusts the caller's `estimatedCost` override.
+
+No schema migration. Validation adds optional `definitive` and batch
+`inconclusive` fields; request history now includes failed non-stream attempts.
+Provider quota polling and complete tool/vision protocol handling remain
+the existing deferred work. Pre-existing boot-service/build changes retained.
+
+Verified: 116/116 tests; typecheck, lint, build, changed-TypeScript formatting,
+dashboard JS syntax and diff checks pass. Rebuilt and restarted the existing
+`api-router.service`; health, dashboard/assets, models and management reads
+return HTTP 200 on `127.0.0.1:4500`. Provider execution tests use mocked
+upstreams and in-memory SQLite.
+
+## Boot service (2026-10-14)
+
+Runs as a systemd user service, starts at boot: `api-router.service`
+(unit source: `deploy/api-router.service`, installed to
+`~/.config/systemd/user/`). `WorkingDirectory` = repo root (`.env` +
+`./data/router.db` resolve there), `ExecStart` = stable fnm node v24
++ `dist/server/main.js`, `Restart=always`. Verified: `is-enabled` +
+`Linger=yes` (starts at boot without login), live 200 on
+`/healthz` + `/dashboard`. Manage with
+`systemctl --user {status,restart,stop} api-router.service`,
+logs via `journalctl --user -u api-router.service`.
+Note: `pnpm build` layout fixed alongside this — new
+`tsconfig.build.json` (`rootDir: src`, src-only) so `pnpm start`
+(`dist/server/main.js`) matches the emitted output and the dashboard
+`public/` path resolves (old layout emitted `dist/src/...`, breaking
+both). After code changes: `pnpm build && systemctl --user restart api-router.service`.
+Killed the old `tsx watch` dev server on :4500 (service owns the port now).
+
 ## Overview providers + pin strings (2026-10-11)
 
 Overview gained a Providers table (base URL, display name, model/account/key

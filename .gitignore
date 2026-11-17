@@ -12,6 +12,7 @@ node_modules/
 dist/
 build/
 out/
+web/dist/
 
 # Database
 data/
@@ -43,6 +44,9 @@ Thumbs.db
 *.swp
 *.swo
 *.suo
+
+# Local AI tool config
+.commandcode/
 
 # TypeScript cache
 *.tsbuildinfo

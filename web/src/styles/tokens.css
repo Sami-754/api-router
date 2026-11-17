@@ -1,0 +1,54 @@
+:root {
+  color-scheme: dark;
+
+  --ink-0: #08090b;
+  --ink-1: #0b0c10;
+  --ink-2: #101116;
+  --ink-3: #15171d;
+  --ink-4: #1b1e25;
+
+  --line: rgba(255, 255, 255, 0.07);
+  --line-strong: rgba(255, 255, 255, 0.12);
+
+  --text: #ececef;
+  --text-2: #a2a5ad;
+  --text-3: #6c6f78;
+
+  --accent: #6062ef;
+  --accent-hover: #7a7cf8;
+  --accent-soft: rgba(96, 98, 239, 0.14);
+  --accent-line: rgba(96, 98, 239, 0.35);
+
+  --ok: #4cc38a;
+  --ok-soft: rgba(76, 195, 138, 0.12);
+  --warn: #d6a548;
+  --warn-soft: rgba(214, 165, 72, 0.12);
+  --bad: #e06a6a;
+  --bad-soft: rgba(224, 106, 106, 0.12);
+  --info: #6aa8e0;
+  --info-soft: rgba(106, 168, 224, 0.12);
+
+  --font-sans:
+    "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-mono:
+    "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --r-sm: 5px;
+  --r: 8px;
+  --r-lg: 12px;
+
+  --sidebar-w: 232px;
+  --rail-w: 64px;
+  --topbar-h: 56px;
+
+  --shadow-overlay:
+    0 24px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --ease: 160ms cubic-bezier(0.2, 0.7, 0.3, 1);
+
+  --z-sidebar: 40;
+  --z-topbar: 30;
+  --z-scrim: 35;
+  --z-dialog: 100;
+  --z-toast: 200;
+}

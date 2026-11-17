@@ -109,4 +109,145 @@ describe("dashboard management APIs", () => {
     expect(delProv.statusCode).toBe(200);
     expect(store.getProvider("openrouter")).toBeUndefined();
   });
+
+  it("lists registered and installable adapters with capabilities", async () => {
+    const { app } = await createTestSetup();
+    const res = await app.inject({ method: "GET", url: "/api/adapters" });
+    expect(res.statusCode).toBe(200);
+    const adapters = res.json().data as Array<{
+      id: string;
+      displayName: string;
+      kind: string;
+      capabilities: string[];
+    }>;
+    expect(adapters.map((adapter) => adapter.id).sort()).toEqual([
+      "exa",
+      "firecrawl",
+      "groq",
+      "openrouter",
+      "tavily",
+    ]);
+    const groq = adapters.find((adapter) => adapter.id === "groq");
+    expect(groq?.capabilities).toContain("llm.chat");
+    expect(groq?.kind).toBe("llm");
+    const tavily = adapters.find((adapter) => adapter.id === "tavily");
+    expect(tavily?.kind).toBe("tool");
+    expect(tavily?.capabilities).toContain("web.search");
+  });
+
+  it("provisions a tool provider, account, key and routes", async () => {
+    const { app, store, registry } = await createTestSetup();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/keys",
+      payload: { providerId: "tavily", secret: "tvly-test-key", label: "main" },
+    });
+    expect(res.statusCode).toBe(201);
+    const data = res.json().data as {
+      provider: { id: string; created: boolean };
+      account: { id: string; created: boolean };
+      credential: {
+        id: string;
+        accountId: string;
+        providerId: string;
+        label: string;
+        status: string;
+        redacted: string;
+        secret?: string;
+      };
+      adapterRegistered: boolean;
+      toolRoutes: string[];
+    };
+    expect(data.provider).toMatchObject({ id: "tavily", created: true });
+    expect(data.account).toMatchObject({ id: "tavily-main", created: true });
+    expect(data.credential).toMatchObject({
+      accountId: "tavily-main",
+      providerId: "tavily",
+      label: "main",
+      status: "active",
+    });
+    expect(data.credential.redacted).toBeTruthy();
+    expect(data.credential.secret).toBeUndefined();
+    expect(data.adapterRegistered).toBe(true);
+    expect(data.toolRoutes).toHaveLength(5);
+    expect(data.toolRoutes).toContain("web.search");
+    expect(store.getProvider("tavily")?.baseUrl).toBe("https://api.tavily.com");
+    expect(registry.get("tavily")).toBeDefined();
+    expect(store.listCredentials("tavily-main")).toHaveLength(1);
+    expect(store.listProviderResources("web.search", "tavily")).toHaveLength(1);
+    expect(
+      store.expandRoutes("web.search").some((r) => r.providerId === "tavily"),
+    ).toBe(true);
+
+    const second = await app.inject({
+      method: "POST",
+      url: "/api/keys",
+      payload: {
+        providerId: "tavily",
+        secret: "tvly-test-key-2",
+        label: "backup",
+      },
+    });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().data.provider.created).toBe(false);
+    expect(second.json().data.account.created).toBe(false);
+    expect(store.listCredentials("tavily-main")).toHaveLength(2);
+    expect(store.listProviderResources("web.search", "tavily")).toHaveLength(1);
+
+    const unknown = await app.inject({
+      method: "POST",
+      url: "/api/keys",
+      payload: { providerId: "nope", secret: "x" },
+    });
+    expect(unknown.statusCode).toBe(404);
+  });
+
+  it("sync maintenance pulls live catalogs and reports auto:free rows", async () => {
+    const fetchImpl = (async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/models")) {
+        return new Response(
+          JSON.stringify({
+            data: [{ id: "test-model" }, { id: "test-model:free" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch;
+    const { app } = await createTestSetup({ fetchImpl });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/maintenance/sync",
+    });
+    expect(res.statusCode).toBe(200);
+    const summary = res.json().data as {
+      mapped: number;
+      pruned: number;
+      skipped: string[];
+      autoFreeMappings: number;
+    };
+    expect(summary.skipped).toEqual([]);
+    expect(summary.mapped).toBe(4);
+    expect(summary.autoFreeMappings).toBe(2);
+  });
+
+  it("credential label patches round-trip and validate", async () => {
+    const { app, store } = await createTestSetup();
+    const patch = await app.inject({
+      method: "PATCH",
+      url: "/api/credentials/cred-groq-1",
+      payload: { label: "renamed key" },
+    });
+    expect(patch.statusCode).toBe(200);
+    expect(patch.json().data.label).toBe("renamed key");
+    expect(store.getCredential("cred-groq-1")?.label).toBe("renamed key");
+
+    const bad = await app.inject({
+      method: "PATCH",
+      url: "/api/credentials/cred-groq-1",
+      payload: { label: "x".repeat(129) },
+    });
+    expect(bad.statusCode).toBe(400);
+  });
 });

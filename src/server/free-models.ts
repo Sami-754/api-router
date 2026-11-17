@@ -2,14 +2,13 @@
 // map ALL chat models it advertises (free or not — the dashboard badges the
 // free ones and offers a free-only filter). Stale mappings for models the
 // provider no longer lists are pruned, so churned catalogs can't go stale.
-// Providers whose discovery fails fall back to curated lists when one exists,
-// otherwise keep existing mappings (never wipe on a network blip).
+// Discovery failure may add curated mappings but never removes existing ones.
 // Non-chat endpoints (embeddings, images, audio, …) are never mapped.
 import { decryptSecret } from "../shared/crypto.js";
 import type { Store } from "../core/store.js";
 
 /** "free" in the model name (case-insensitive): `:free`, `-free`, … */
-export const FREE_MODEL_RE = /free/i;
+const FREE_MODEL_RE = /free/i;
 
 /** Non-chat model endpoints — never mapped, free or not. */
 export const SKIP_MODEL_RE =
@@ -54,24 +53,22 @@ export function isFreeModel(upstreamId: string): boolean {
 export const AUTO_FREE_RESOURCE_ID = "llm:model:auto:free";
 
 /**
- * Rebuild the `auto:free` alias from current mappings. Derived state: wipe
- * and recreate every run so churned models can't linger. Respects disabled
- * mappings (a disabled free model is not aliased).
+ * Reconcile `auto:free` with current mappings without deleting unchanged
+ * rows. Executable aliases share source quota/health state. Disabled source
+ * mappings are excluded.
  */
 export function refreshAutoFreeAlias(store: Store): number {
-  for (const m of store.listProviderResources(AUTO_FREE_RESOURCE_ID)) {
-    store.deleteProviderResource(m.id);
-  }
+  const existing = store.listProviderResources(AUTO_FREE_RESOURCE_ID);
   const free = store
     .listProviderResources()
     .filter(
       (m) =>
         m.enabled &&
         m.resourceId !== AUTO_FREE_RESOURCE_ID &&
+        m.capabilities.includes("llm.chat") &&
         isFreeModel(m.upstreamId),
     );
-  if (!free.length) return 0;
-  if (!store.getResource(AUTO_FREE_RESOURCE_ID)) {
+  if (free.length && !store.getResource(AUTO_FREE_RESOURCE_ID)) {
     store.upsertResource({
       id: AUTO_FREE_RESOURCE_ID,
       kind: "llm_model",
@@ -81,25 +78,54 @@ export function refreshAutoFreeAlias(store: Store): number {
     });
   }
   const now = new Date().toISOString();
+  const keep = new Set<string>();
   for (const m of free) {
-    store.upsertProviderResource({
+    const alias = existing.find(
+      (a) => a.providerId === m.providerId && a.upstreamId === m.upstreamId,
+    );
+    const row = store.upsertProviderResource({
+      id: alias?.id,
       resourceId: AUTO_FREE_RESOURCE_ID,
       providerId: m.providerId,
       upstreamId: m.upstreamId,
-      capabilities: ["llm.chat", "llm.tools"],
-      enabled: true,
+      capabilities: m.capabilities,
+      contextTokens: m.contextTokens,
+      enabled: alias?.enabled ?? true,
       metadata: { free: true, aliasOf: m.id, syncedAt: now },
     });
+    keep.add(row.id);
   }
+  for (const m of existing)
+    if (!keep.has(m.id)) store.deleteProviderResource(m.id);
   return free.length;
 }
 
 function extractIds(providerId: string, data: unknown): string[] {
-  const list = (data as { data?: Array<{ id?: string }> }).data ?? [];
-  let ids = list.map((m) => String(m.id ?? "")).filter(Boolean);
+  const rawList =
+    (data as { data?: unknown; models?: unknown } | null)?.data ??
+    (data as { data?: unknown; models?: unknown } | null)?.models;
+  if (!Array.isArray(rawList)) {
+    throw new Error("invalid model catalog");
+  }
+  const ids: string[] = [];
+  for (const m of rawList) {
+    if (!m || typeof m !== "object") continue;
+    const item = m as { id?: unknown; name?: unknown };
+    const id =
+      typeof item.id === "string"
+        ? item.id
+        : typeof item.name === "string"
+          ? item.name
+          : "";
+    if (id.trim()) ids.push(id.trim());
+  }
+  if (!ids.length) {
+    throw new Error("invalid model catalog");
+  }
+  let mappedIds = ids;
   if (providerId === "google")
-    ids = ids.map((id) => id.replace(/^models\//, ""));
-  return [...new Set(ids)];
+    mappedIds = mappedIds.map((id) => id.replace(/^models\//, ""));
+  return [...new Set(mappedIds)];
 }
 
 export interface ModelSyncSummary {
@@ -161,6 +187,7 @@ export async function syncProviderModels(opts: {
     }
 
     const chat = [...new Set(listed)].filter((id) => !SKIP_MODEL_RE.test(id));
+    const previous = store.listProviderResources(undefined, p.id);
     const keep = new Set<string>();
     for (const upstreamId of chat) {
       const free = isFreeModel(upstreamId);
@@ -174,13 +201,19 @@ export async function syncProviderModels(opts: {
           metadata: { discoveredFrom: p.id, free },
         });
       }
+      const existing = previous.find(
+        (m) => m.resourceId === canonical && m.upstreamId === upstreamId,
+      );
       const pr = store.upsertProviderResource({
+        id: existing?.id,
         resourceId: canonical,
         providerId: p.id,
         upstreamId,
         capabilities: ["llm.chat", "llm.tools"],
-        enabled: true,
+        enabled: existing?.enabled ?? true,
+        contextTokens: existing?.contextTokens,
         metadata: {
+          ...existing?.metadata,
           free,
           ...(verified ? { discovered: true } : { unverified: true }),
           syncedAt: new Date().toISOString(),
@@ -189,8 +222,15 @@ export async function syncProviderModels(opts: {
       keep.add(pr.id);
       summary.mapped++;
     }
-    for (const m of store.listProviderResources(undefined, p.id)) {
-      if (!keep.has(m.id)) {
+    for (const m of previous) {
+      // Only live catalogs can prove removal. Tools, custom canonical
+      // mappings and derived alias rows are outside this sync's ownership.
+      if (
+        verified &&
+        m.resourceId === `llm:model:${m.upstreamId.toLowerCase()}` &&
+        store.getResource(m.resourceId)?.kind === "llm_model" &&
+        !keep.has(m.id)
+      ) {
         store.deleteProviderResource(m.id);
         summary.pruned++;
       }

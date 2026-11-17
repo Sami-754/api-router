@@ -136,4 +136,117 @@ describe("streaming", () => {
     const ok = store.listRequestLogs(5).find((l) => l.status === "success");
     expect(ok?.totalTokens).toBe(6);
   });
+
+  it("handles streams where the final chunk and [DONE] lack a trailing newline", async () => {
+    const enc = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode(`data: ${chunk("Hi", "stop")}\n\ndata: [DONE]`)); // no trailing \n
+        c.close();
+      },
+    });
+    const mock: typeof fetch = async () =>
+      new Response(stream, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    const { app } = await createTestSetup({ fetchImpl: mock });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: streamBody("nemotron-3-super-120b"),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain("Hi");
+    expect(res.body).toContain("[DONE]");
+  });
+
+  it("exposes cancel() on StreamOutcome to stop upstream stream", async () => {
+    const { router } = await createTestSetup({
+      fetchImpl: async () => sse([chunk("hello", "stop")]),
+    });
+    const outcome = await router.executeStream({
+      resourceId: "llm:model:nemotron-3-super-120b",
+      capability: "llm.chat",
+      normalized: {
+        kind: "llm.chat",
+        body: {
+          requestId: "cancel-test",
+          messages: [{ role: "user", content: "hi" }],
+        },
+      },
+    });
+    expect(typeof outcome.cancel).toBe("function");
+    outcome.cancel?.(); // should execute cleanly without throwing
+  });
+
+  it("forwards streamed tool_call deltas to OpenAI-compatible clients", async () => {
+    const mock: typeof fetch = async () =>
+      sse([
+        JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: "call_1",
+                    type: "function",
+                    function: { name: "finish_task", arguments: "" },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }),
+        JSON.stringify({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    function: { arguments: '{"summary":"TASK_OK"}' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }),
+        JSON.stringify({
+          choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+        }),
+      ]);
+    const { app } = await createTestSetup({ fetchImpl: mock });
+    const res = await app.inject({
+      method: "POST",
+      url: "/v1/chat/completions",
+      payload: {
+        ...streamBody("groq::nemotron-3-super-120b"),
+        tools: [
+          {
+            type: "function",
+            function: {
+              name: "finish_task",
+              description: "Finish the task",
+              parameters: {
+                type: "object",
+                properties: { summary: { type: "string" } },
+                required: ["summary"],
+              },
+            },
+          },
+        ],
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('"tool_calls"');
+    expect(res.body).toContain("finish_task");
+    expect(res.body).toContain("TASK_OK");
+    expect(res.body).toContain('"finish_reason":"tool_calls"');
+  });
 });

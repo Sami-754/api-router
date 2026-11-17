@@ -112,6 +112,8 @@ CREATE TABLE IF NOT EXISTS usage_events (
 );
 CREATE INDEX IF NOT EXISTS idx_usage_cred ON usage_events(credential_id);
 CREATE INDEX IF NOT EXISTS idx_usage_req ON usage_events(request_id);
+CREATE INDEX IF NOT EXISTS idx_usage_cred_metric_time ON usage_events(credential_id, metric, observed_at);
+CREATE INDEX IF NOT EXISTS idx_pr_upstream ON provider_resources(upstream_id);
 
 CREATE TABLE IF NOT EXISTS request_logs (
   id TEXT PRIMARY KEY,

@@ -4,13 +4,14 @@ import {
   parseModelString,
   routingHintsFromHeaders,
 } from "../../shared/model-string.js";
+import { estimateRequestTokens } from "../../shared/tokens.js";
 import type {
   Capability,
   RoutingHint,
   RoutingPolicyName,
 } from "../../shared/types.js";
 import { RouterError } from "../../core/router.js";
-import type { AppDeps } from "../app.js";
+import type { AppDeps } from "../deps.js";
 
 // Protocol shims over the same routing core:
 //   POST /v1/responses — OpenAI Responses API (translating shim over chat)
@@ -83,6 +84,7 @@ function toText(
 }
 
 interface Prepared {
+  resourceId: string;
   hint: RoutingHint;
   normalized: {
     kind: "llm.chat";
@@ -118,7 +120,13 @@ function prepare(
       },
     };
   }
-  if (!deps.store.getResource(parsed.canonicalResourceId)) {
+  const resource =
+    deps.store.getResource(parsed.canonicalResourceId) ??
+    deps.store.resolveResourceByModel?.(
+      parsed.logicalModel,
+      parsed.providerPin,
+    );
+  if (!resource) {
     return {
       error: {
         status: 404,
@@ -146,9 +154,9 @@ function prepare(
     allowCrossProviderFallback:
       opts.routing?.allowCrossProviderFallback ?? null,
   };
-  const chars = messages.reduce((n, m) => n + m.content.length, 0);
-  const estimated = Math.ceil(chars / 4) + (opts.maxTokens ?? 1024);
+  const estimated = estimateRequestTokens(messages, opts.maxTokens);
   return {
+    resourceId: resource.id,
     hint,
     normalized: {
       kind: "llm.chat",
@@ -202,7 +210,7 @@ export async function registerProtocolRoutes(
     try {
       const outcome = await deps.router.execute({
         requestId: req.id,
-        resourceId: `llm:model:${parseModelString(b.model).logicalModel.toLowerCase()}`,
+        resourceId: prep.resourceId,
         capability,
         hint: prep.hint,
         normalized: prep.normalized,
@@ -291,7 +299,7 @@ export async function registerProtocolRoutes(
     try {
       const outcome = await deps.router.execute({
         requestId: req.id,
-        resourceId: `llm:model:${parseModelString(b.model).logicalModel.toLowerCase()}`,
+        resourceId: prep.resourceId,
         capability,
         hint: prep.hint,
         normalized: prep.normalized,
@@ -408,7 +416,7 @@ async function streamResponses(
   try {
     outcome = await deps.router.executeStream({
       requestId: req.id,
-      resourceId: `llm:model:${parseModelString(model).logicalModel.toLowerCase()}`,
+      resourceId: prep.resourceId,
       capability: "llm.chat",
       hint: prep.hint,
       normalized: prep.normalized,
@@ -432,6 +440,7 @@ async function streamResponses(
   let aborted = false;
   req.raw.on("close", () => {
     aborted = true;
+    outcome.cancel?.();
   });
   const send = (obj: unknown) => {
     if (!aborted) raw.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -488,7 +497,7 @@ async function streamMessages(
   try {
     outcome = await deps.router.executeStream({
       requestId: req.id,
-      resourceId: `llm:model:${parseModelString(model).logicalModel.toLowerCase()}`,
+      resourceId: prep.resourceId,
       capability: "llm.chat",
       hint: prep.hint,
       normalized: prep.normalized,
@@ -512,6 +521,7 @@ async function streamMessages(
   let aborted = false;
   req.raw.on("close", () => {
     aborted = true;
+    outcome.cancel?.();
   });
   const event = (type: string, extra: unknown) => {
     if (!aborted)

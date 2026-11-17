@@ -1,111 +1,121 @@
-# UI Redesign — brief
+# UI redesign — shipped
 
-Status: **planned, not started.** The current dashboard (`public/`, static, no
-build step) works but looks generic. This doc states what the remake must
-achieve. No code changes until this brief is agreed.
+Status: **shipped 2026-11-17.** Replaces the old dependency-free
+`public/index.html + styles.css + app.js` dashboard with a React + Vite +
+TypeScript app in `web/`.
 
-## Why remake
+The previous brief locked "no build step" and a six-page IA. Both constraints
+were deliberately dropped: the single-file UI was the maintainability problem,
+and the six pages duplicated each other. This document is the new spec.
 
-- Current UI reads as a default dark-admin template: gray cards, gray pills,
-  no visual identity. Screenshots confirmed: Overview and Resources look
-  "normal" — interchangeable with any CRUD admin.
-- Information architecture is now settled (6 pages + Settings modal, see
-  STATE.md "Dashboard rebuild"). The remake keeps that IA and replaces the
-  visual world + adds genuinely useful operator options.
-- Constraints (locked): static files served by the router itself
-  (`public/index.html + styles.css + app.js`), **no build step, no CDN/runtime
-  dependency** (dashboard must work on offline/LAN setups). Vanilla JS,
-  hash routing, batched `/api/routes/counts`
-  (never N+1 `/api/routes`), one-shot 429 retry.
+## Operator model
 
-## Design goal
+Nav = six pages plus a Settings drawer. Each page answers one question.
 
-A router dashboard should feel like **mission control for quota**, not a
-database viewer. Every page answers one operator question at a glance:
+| Nav | Route | Question | Sections |
+|---|---|---|---|
+| Dashboard | `/` | Is anything on fire? | Attention feed, metric strip, 24h activity, quota watch, provider health, recent requests |
+| Models | `/models` | What can a client call, and where does it route? | Models/Tools tabs, filters, canonical table, sync models |
+| Model detail | `/models/:id` | Which routes serve this, with which key/quota? | Summary band, capability switch, provider mapping groups, route table |
+| Providers | `/providers` | Which providers/accounts/keys are alive? | Provider table (adapter/keys/models/24h), direct Add key |
+| Provider detail | `/providers/:id` | What quota is left, and which keys work? | Config, accounts (accordion), key table, per-key quotas + usage, add key/quota, validate |
+| Requests | `/requests` | What happened, and why? | Grouped request table, filters, auto-refresh, attempt-chain drawer |
+| Playground | `/playground` | Does this route actually work? | Chat conversation, web-tool tabs, route metadata, copy-as-curl |
+| Add | `/add` | How do I add a key or a missing model route? | Key-first form (provider → key → label), model-route tab, setup checklists |
+| Settings | gear → drawer | Defaults and maintenance | Policy, client endpoints, validate stale keys, sync models |
 
-| Page | Operator question |
+Dropped: standalone Quotas page, routing simulator UI. Quotas now appear where
+they act: model routes, provider keys, and the dashboard quota watch.
+
+**Providers and tools are backend-only.** The dashboard never creates new
+adapters or tool integrations. The Add page is key-first: pick a provider,
+paste the key, label it. For known tool adapters (Exa/Tavily/Firecrawl) the
+backend materializes the provider row, main account, capability mappings and
+live adapter from the key. The Add page's Model route tab covers models missing
+from a provider catalog. The rest of the UI is for accounts/keys, quotas, route
+inspection/toggles and traffic observation.
+
+## Visual system
+
+Refined dark ops console. The identity comes from typography, hairlines and
+quota/health signal, not gradients or card shadows.
+
+```text
+Ink:      #08090b / #0b0c10 / #101116 / #15171d / #1b1e25
+Lines:    rgba(255,255,255,.07) and .12
+Text:     #ececef / #a2a5ad / #6c6f78
+Accent:   #6062ef (single accent; no lime, no gradient)
+Status:   #4cc38a ok / #d6a548 warn / #e06a6a bad
+Type:     Geist Sans variable + Geist Mono variable (bundled locally)
+```
+
+- 232px sidebar (64px rail, off-canvas under 900px), 56px topbar, 1440px
+  content, 12-column grid.
+- 22/600 page titles, 14/600 section titles, 13px body, 12.5px tables,
+  tabular numerals everywhere.
+- Tables use a sticky header, 36–40px rows and hairline dividers; no
+  border + shadow + card stack.
+- Native `<dialog>` for modals and the settings/request drawers (focus trap,
+  Escape, backdrop). Skeleton loaders, tailored empty states, inline errors,
+  focus-visible rings, skip link and reduced-motion support.
+- No charts dependency: the 24h activity chart is CSS bars.
+
+## Architecture
+
+```text
+web/
+  index.html, vite.config.ts, tsconfig.json
+  src/main.tsx, App.tsx
+  src/styles/{tokens,base,shell,components,pages}.css
+  src/lib/{api,types,format,hooks,group,constants,refresh}.ts(x)
+  src/components/   shell primitives, tables, pills, quota bars, dialogs
+  src/pages/        Dashboard, Models, ModelDetail, Providers, ProviderDetail,
+                     Requests, Playground, Add, NotFound
+  src/features/     keys/, models/, providers/, requests/, playground/, settings/
+```
+
+- HashRouter; no server rewrite needed.
+- One typed fetch client with envelope parsing and one 429 retry.
+- `useApi` does abortable fetch + visibility-aware polling; manual refresh
+  bumps a shared nonce.
+- Request logs are per attempt (`<requestId>:attemptN`). The Requests page
+  groups them client-side so one row = one logical request, and the drawer
+  shows the fallback chain.
+- Alias resources (`auto:free`) can have →1,800 routes. The detail page shows
+  provider coverage first and paginates/collapses mapping groups.
+- No N+1 API calls: list pages use `/api/routes/counts`, never per-row
+  `/api/routes`.
+
+## Backend additions
+
+| Endpoint | Purpose |
 |---|---|
-| Overview | Is anything on fire right now? |
-| Playground | Does this route actually work? |
-| Resources | Where can this model be served from, and which route wins? |
-| Providers & Keys | Which keys are alive, and what's their track record? |
-| Quotas & Usage | What expires soon, what's exhausted, what's the burn rate? |
-| Requests | What happened, and why did it route that way? |
+| `GET /api/adapters` | runtime + installable tool adapters with kind/base URL/capabilities |
+| `POST /api/keys` | key-first provisioning: provider/account/credential + tool mappings |
+| `POST /api/maintenance/sync` | single-flight model catalog sync; returns `{mapped, pruned, skipped, autoFreeMappings}` |
+| `PATCH /api/credentials/:id` `label` | inline key label editing |
 
-Visual direction (to be picked before coding): a real identity — e.g.
-terminal/ops-room aesthetic with tabular numerals and dense signal-first
-layout, or a warm paper-and-ink light theme. Not another slate-cards +
-accent-pill template. Typography and quota/health semaphores carry the
-identity, not gradients.
+`src/server/app.ts` now serves `web/dist` at `/dashboard` and `/dashboard/*`
+with traversal guards and immutable caching for hashed assets. The server
+still boots and tests pass when `web/dist` is absent (dashboard returns 404
+with "run pnpm web:build").
 
-## Useful options to add (proposed)
+## Commands
 
-Only options an operator of *this* router would use weekly. Nothing decorative.
+```sh
+pnpm dev        # API :4500
+pnpm dev:web    # Vite :5173, proxies /api /v1 /healthz
+pnpm build      # web build + server tsc
+pnpm typecheck  # server + web
+pnpm lint
+pnpm test
+```
 
-### Global
-- [ ] `Cmd/Ctrl+K` quick jump: fuzzy-search resources, providers, credentials,
-      recent requests by ID — deep-links to the right page.
-- [ ] Copy-as-curl on every test/playground run and on request detail
-      (replay the exact request against the router).
-- [ ] Relative-time + auto-refresh toggle on Overview/Requests
-      (poll `/api/overview`, `/api/requests?limit=` every N seconds).
+Deploy: `pnpm build && systemctl --user restart api-router.service`.
 
-### Overview
-- [ ] Alert feed: invalid keys, quotas <10% remaining, error-rate spikes in
-      the last hour — each linking to the relevant page.
-- [ ] Top canonical models by 24h traffic + success rate.
+## Deliberately not included
 
-### Playground
-- [ ] Saved presets: named `{model, provider pin, policy}` combos in
-      localStorage, one click to load.
-- [ ] Side-by-side compare: same prompt → two providers, latency + output +
-      route shown next to each other.
-- [ ] Tool tabs keep last-used inputs (localStorage) so retests are one click.
-
-### Resources
-- [ ] Provider-coverage matrix: rows = canonical resources, columns =
-      providers, cell = route count / health dot. Fastest way to see gaps.
-- [ ] Bulk mapping actions per provider (enable/disable all mappings).
-- [ ] Inline simulate stays (it works), plus "explain this ranking" —
-      surface score breakdown already returned by `/api/routing/simulate`.
-
-### Providers & Keys
-- [ ] Per-key track record: 24h requests, success rate, avg latency
-      (derivable from `/api/requests` + `/api/usage` — no backend change).
-- [ ] Per-key usage sparkline (hourly buckets, same technique as Overview
-      histogram).
-- [ ] Bulk validate + "disable invalid" after a validation job.
-- [ ] Key notes/label editing inline (label PATCH already exists).
-
-### Quotas & Usage
-- [ ] "Burning soon" spotlight: windows sorted by expiry pressure
-      (high remaining + near reset first) — mirrors the `burn` policy.
-- [ ] Projected exhaustion: `remaining / recent burn rate` per window.
-- [ ] Inline edit of used/limit (DELETE + POST exists; PATCH would need a
-      tiny backend addition — optional).
-
-### Requests
-- [ ] Replay button: sends the logged request back through Playground
-      pre-filled (model, provider pin, policy, messages where stored).
-- [ ] Fallback-chain view: render `attempts` as a step list
-      (route tried → error class → next route), not a raw count.
-- [ ] Cost/token column + filter by model substring (client-side).
-
-## Verification plan (when built)
-
-1. `node --check public/app.js`.
-2. Every `/api/*` path used exists in `src/server/routes/management.ts`.
-3. Screenshot all 6 pages + mobile width in headless Chromium against the
-   live server — one batched pass,
-   fix, one confirmation pass. Then run the Impeccable detector:
-   `scripts/impeccable detect --json <changed targets>`.
-4. No backend test changes expected (UI-only); `pnpm test` untouched.
-5. Update STATE.md + this file (flip status to shipped).
-
-## Open questions for the owner
-
-1. Visual world: terminal/ops-room dark, warm light "paper", or a third
-   identity? (Pick one — no middle-ground polish of the current look.)
-2. Which 3 options from the list above are must-have for v1 of the remake?
-3. Keep Settings as a modal, or does it deserve a page once validation
-   scheduling grows?
+New provider adapters/tool integrations, command palette, provider coverage matrix,
+bulk mapping actions, saved playground presets, side-by-side compare,
+sparklines, projected exhaustion, bulk key-import UI, and the routing
+simulator. Add them only if they earn their space.

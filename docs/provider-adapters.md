@@ -63,5 +63,12 @@ adapters that support it — the routing core is untouched either way.
 - Adapters receive the **decrypted** secret in memory only; never log it.
 - `classifyError` must set `retryable` correctly — it drives fallback.
   When in doubt, non-retryable is safer than retry storms.
+- Validation returns `definitive: false` for throttling, outages, blocked
+  probes or unsupported discovery endpoints. This leaves credential validity
+  and validation freshness unchanged. A definitive 401 marks a key invalid;
+  a successful probe preserves an owner's explicitly disabled state.
+- `ctx.timeoutMs` is the remaining request budget. Keep the abort signal
+  active while reading the response body, including streams. `ctx.deadlineAt`
+  is the absolute deadline for all subrequests/polling within one execution.
 - Custom `baseUrl` values are validated (`src/shared/config.ts`):
   http(s) only, no credentials in URL, no loopback/metadata hosts.

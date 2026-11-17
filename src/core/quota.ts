@@ -28,6 +28,72 @@ export function msUntilReset(
   return Math.max(0, t - nowMs);
 }
 
+/** Renew only explicitly configured recurring windows. Provider credits and
+ * fixed expiry records need a fresh observation, not an assumed refill. */
+function renewConfiguredWindow(
+  store: Store,
+  w: QuotaWindow,
+  nowMs: number,
+): QuotaWindow {
+  if (
+    w.source !== "configured" ||
+    !w.resetAt ||
+    !w.windowKind.startsWith("calendar_")
+  )
+    return w;
+  const reset = Date.parse(w.resetAt);
+  if (!Number.isFinite(reset) || reset > nowMs) return w;
+  const durations: Partial<Record<QuotaWindow["windowKind"], number>> = {
+    calendar_minute: 60_000,
+    calendar_hour: 3_600_000,
+    calendar_day: 86_400_000,
+    calendar_week: 7 * 86_400_000,
+  };
+  let start: number;
+  let next: number;
+  const duration = durations[w.windowKind];
+  if (duration) {
+    start = reset + Math.floor((nowMs - reset) / duration) * duration;
+    next = start + duration;
+  } else if (w.windowKind === "calendar_month") {
+    const anchor = new Date(reset);
+    const now = new Date(nowMs);
+    const atMonth = (offset: number) => {
+      const d = new Date(reset);
+      d.setUTCDate(1);
+      d.setUTCMonth(d.getUTCMonth() + offset);
+      const lastDay = new Date(
+        Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0),
+      ).getUTCDate();
+      d.setUTCDate(Math.min(anchor.getUTCDate(), lastDay));
+      return d.getTime();
+    };
+    let offset =
+      (now.getUTCFullYear() - anchor.getUTCFullYear()) * 12 +
+      now.getUTCMonth() -
+      anchor.getUTCMonth();
+    if (atMonth(offset) > nowMs) offset--;
+    start = atMonth(offset);
+    next = atMonth(offset + 1);
+  } else return w;
+  const windowStartedAt = new Date(start).toISOString();
+  const usedValue = store.sumUsage(
+    w.credentialId,
+    w.metric,
+    windowStartedAt,
+    w.providerResourceId ?? undefined,
+  );
+  return store.recordQuotaObservation({
+    ...w,
+    usedValue,
+    remainingValue:
+      w.remainingValue == null ? null : Math.max(0, w.limitValue - usedValue),
+    windowStartedAt,
+    resetAt: new Date(next).toISOString(),
+    observedAt: new Date(nowMs).toISOString(),
+  });
+}
+
 export function quotaViewForRoute(
   store: Store,
   route: Route,
@@ -36,7 +102,7 @@ export function quotaViewForRoute(
   // Quota windows attach to credentials (optionally scoped to a provider resource).
   // A window scoped to another provider resource does not constrain this route.
   const all = store.listQuotaWindows(route.credentialId);
-  const windows = all.filter(
+  const applicable = all.filter(
     (w) =>
       !w.providerResourceId ||
       w.providerResourceId === route.providerResourceId,
@@ -45,20 +111,31 @@ export function quotaViewForRoute(
   let minFraction: number | null = null;
   let soonestResetAt: string | null = null;
   let msReset: number | null = null;
+  const windows: QuotaWindow[] = [];
 
-  for (const w of windows) {
+  for (const stale of applicable) {
+    const original = renewConfiguredWindow(store, stale, nowMs);
     // Rate windows are evaluated live from usage_events in candidates() —
     // static counters never reset, so they must not hard-block here.
-    if (isRateWindow(w)) {
-      const ms = msUntilReset(w, nowMs);
-      if (ms != null && (msReset == null || ms < msReset)) {
-        msReset = ms;
-        soonestResetAt = w.resetAt ?? null;
-      }
-      continue;
+    let w = original;
+    if (isRateWindow(original)) {
+      const startMs = rateWindowStartMs(original, nowMs)!;
+      const used = store.sumUsage(
+        route.credentialId,
+        w.metric,
+        new Date(startMs).toISOString(),
+        w.providerResourceId ?? undefined,
+      );
+      // Scorers need the current window, not accumulated historical counters.
+      w = {
+        ...w,
+        usedValue: used,
+        remainingValue: Math.max(0, w.limitValue - used),
+      };
     }
+    windows.push(w);
     const remaining = w.remainingValue ?? w.limitValue - w.usedValue;
-    if (w.hard && remaining <= 0) {
+    if (!isRateWindow(original) && w.hard && remaining <= 0) {
       exhaustedReasons.push(
         `${w.metric} exhausted (${w.usedValue}/${w.limitValue})`,
       );
@@ -91,7 +168,7 @@ export function quotaViewForRoute(
 // ---------------------------------------------------------------------------
 
 /** True when a window is enforced live from usage_events. */
-export function isRateWindow(
+function isRateWindow(
   w: Pick<
     QuotaWindow,
     "windowKind" | "windowSeconds" | "remainingValue" | "source"
@@ -113,7 +190,7 @@ export function isRateWindow(
 }
 
 /** Start of the current window in ms epoch, or null when the window is static. */
-export function rateWindowStartMs(
+function rateWindowStartMs(
   w: Pick<QuotaWindow, "windowKind" | "windowSeconds">,
   nowMs: number,
 ): number | null {
@@ -123,13 +200,13 @@ export function rateWindowStartMs(
       if (!w.windowSeconds) return null;
       return nowMs - w.windowSeconds * 1000;
     case "calendar_minute":
-      d.setSeconds(0, 0);
+      d.setUTCSeconds(0, 0);
       return d.getTime();
     case "calendar_hour":
-      d.setMinutes(0, 0, 0);
+      d.setUTCMinutes(0, 0, 0);
       return d.getTime();
     case "calendar_day":
-      d.setHours(0, 0, 0, 0);
+      d.setUTCHours(0, 0, 0, 0);
       return d.getTime();
     default:
       return null; // calendar_week/month/fixed are static (provider-reported)

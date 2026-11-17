@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import type { NormalizedChatRequest } from "../../provider-sdk/types.js";
 import { chatCompletionsSchema } from "../../shared/schemas.js";
 import {
   parseModelString,
@@ -7,7 +8,7 @@ import {
 import { estimateRequestTokens } from "../../shared/tokens.js";
 import type { Capability, RoutingPolicyName } from "../../shared/types.js";
 import { RouterError } from "../../core/router.js";
-import type { AppDeps } from "../app.js";
+import type { AppDeps } from "../deps.js";
 
 function openAIError(reply: { code(n: number): unknown }, e: unknown) {
   if (e instanceof RouterError) {
@@ -95,7 +96,12 @@ export async function registerLlmRoutes(
         null,
     };
 
-    const resource = deps.store.getResource(model.canonicalResourceId);
+    const resource =
+      deps.store.getResource(model.canonicalResourceId) ??
+      deps.store.resolveResourceByModel?.(
+        model.logicalModel,
+        model.providerPin,
+      );
     if (!resource) {
       return reply.code(404).send({
         error: {
@@ -114,9 +120,14 @@ export async function registerLlmRoutes(
         messages: body.messages.map((m) => ({
           role: m.role,
           content:
-            typeof m.content === "string"
-              ? m.content
-              : JSON.stringify(m.content),
+            m.content === null || m.content === undefined
+              ? null
+              : typeof m.content === "string"
+                ? m.content
+                : JSON.stringify(m.content),
+          ...(m.name ? { name: m.name } : {}),
+          ...(m.tool_calls ? { tool_calls: m.tool_calls } : {}),
+          ...(m.tool_call_id ? { tool_call_id: m.tool_call_id } : {}),
         })),
         temperature: body.temperature,
         topP: body.top_p,
@@ -147,7 +158,10 @@ export async function registerLlmRoutes(
         capability,
         hint,
         normalized,
-        requestedTokens: hint.estimatedCost,
+        requestedTokens: estimateRequestTokens(
+          body.messages,
+          body.max_tokens ?? body.max_completion_tokens,
+        ),
       });
       if (outcome.response.kind !== "llm.chat")
         throw new Error("adapter returned wrong response kind");
@@ -212,17 +226,7 @@ async function streamChat(
   },
   normalized: {
     kind: "llm.chat";
-    body: {
-      requestId: string;
-      messages: Array<{ role: string; content: string }>;
-      temperature?: number;
-      topP?: number;
-      maxTokens?: number;
-      stop?: string | string[];
-      tools?: unknown[];
-      toolChoice?: unknown;
-      user?: string;
-    };
+    body: NormalizedChatRequest;
   },
 ): Promise<void> {
   let outcome;
@@ -233,7 +237,10 @@ async function streamChat(
       capability,
       hint,
       normalized,
-      requestedTokens: hint.estimatedCost,
+      requestedTokens: estimateRequestTokens(
+        normalized.body.messages,
+        normalized.body.maxTokens,
+      ),
     });
   } catch (e) {
     return openAIError(reply, e) as unknown as Promise<void>;
@@ -261,6 +268,7 @@ async function streamChat(
   let lastFinish: string | null = null;
   req.raw.on("close", () => {
     aborted = true;
+    outcome.cancel?.();
   });
   const send = (obj: unknown) => {
     if (!aborted) raw.write(`data: ${JSON.stringify(obj)}\n\n`);
@@ -271,6 +279,9 @@ async function streamChat(
       fullText += chunk.delta;
       if (chunk.usage) usage = chunk.usage;
       if (chunk.finishReason) lastFinish = chunk.finishReason;
+      const delta: Record<string, unknown> = {};
+      if (chunk.delta) delta.content = chunk.delta;
+      if (chunk.toolCalls?.length) delta.tool_calls = chunk.toolCalls;
       send({
         id: sseId,
         object: "chat.completion.chunk",
@@ -279,7 +290,7 @@ async function streamChat(
         choices: [
           {
             index: 0,
-            delta: chunk.delta ? { content: chunk.delta } : {},
+            delta,
             finish_reason: chunk.finishReason ?? null,
           },
         ],

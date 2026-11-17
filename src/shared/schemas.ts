@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const capabilitySchema = z.enum([
+const capabilitySchema = z.enum([
   "llm.chat",
   "llm.responses",
   "llm.tools",
@@ -36,6 +36,17 @@ export const providerSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
 });
 
+export const providerPatchSchema = providerSchema
+  .omit({ id: true, metadata: true })
+  .partial()
+  .strict();
+export const credentialPatchSchema = z
+  .object({
+    status: z.enum(["active", "disabled", "invalid"]).optional(),
+    label: z.string().trim().max(128).optional().nullable(),
+  })
+  .strict();
+
 export const accountSchema = z.object({
   id: z.string().min(1).max(128),
   providerId: z.string().min(1),
@@ -51,6 +62,17 @@ export const credentialCreateSchema = z.object({
   /** Raw secret; server encrypts before storage. Never persisted in plain text. */
   secret: z.string().min(1).max(4096),
   status: z.enum(["active", "disabled", "invalid"]).default("active"),
+});
+
+export const keyProvisionSchema = z.object({
+  providerId: z
+    .string()
+    .min(1)
+    .max(64)
+    .regex(/^[a-z0-9][a-z0-9-_]*$/i),
+  secret: z.string().min(1).max(4096),
+  label: z.string().trim().max(128).optional().nullable(),
+  accountId: z.string().min(1).max(128).optional(),
 });
 
 export const resourceSchema = z.object({
@@ -116,7 +138,7 @@ export const quotaWindowSchema = z.object({
   confidence: z.number().min(0).max(1).optional().nullable(),
 });
 
-export const routingHintSchema = z.object({
+const routingHintSchema = z.object({
   provider: z.string().min(1).optional().nullable(),
   account: z.string().min(1).optional().nullable(),
   credential: z.string().min(1).optional().nullable(),
@@ -127,7 +149,10 @@ export const routingHintSchema = z.object({
 
 const chatMessageSchema = z.object({
   role: z.string().min(1),
-  content: z.union([z.string(), z.array(z.unknown())]),
+  content: z
+    .union([z.string(), z.array(z.unknown())])
+    .nullable()
+    .optional(),
   name: z.string().optional(),
   tool_calls: z.array(z.unknown()).optional(),
   tool_call_id: z.string().optional(),

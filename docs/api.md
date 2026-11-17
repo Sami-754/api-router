@@ -1,7 +1,7 @@
 # API reference
 
 Base URL: `http://127.0.0.1:4500` by default (see `PORT`/`HOST` in `.env`;
-`.env.example` ships `PORT=3000` — the examples below use your configured port).
+`.env.example` ships `PORT=4500` — the examples below use your configured port).
 
 No auth: `/api/*`, `/v1/*` and `/healthz` are all public by design.
 This is a local-first single-user service — bind to loopback (`HOST=127.0.0.1`)
@@ -93,31 +93,50 @@ live rate windows like LLM tokens.
 
 | Method | Path | Description |
 |---|---|---|
+| GET | `/api/adapters` | runtime + installable tool adapters (`kind`, base URL, capabilities) |
 | GET/POST | `/api/providers` | list / upsert provider |
 | PATCH | `/api/providers/:id` | enable/disable, priority, baseUrl |
 | GET/POST | `/api/accounts` | list (optional `?provider=`) / upsert account |
 | GET | `/api/credentials` | list (redacted, optional `?account=`); secrets never returned |
-| POST | `/api/credentials` | store a secret (`{accountId, secret, label?}`); encrypted at rest |
-| PATCH | `/api/credentials/:id` | change `status` (`active`/`disabled`/`invalid`) |
+| POST | `/api/keys` | key-first provisioning (`{providerId, secret, label?, accountId?}`): creates provider/account if missing, stores the encrypted key, registers known tool adapters live and creates tool capability mappings |
+| POST | `/api/credentials` | store a secret for an existing account (`{accountId, secret, label?}`); encrypted at rest |
+| PATCH | `/api/credentials/:id` | change `status` (`active`/`disabled`/`invalid`) or `label` |
 | DELETE | `/api/credentials/:id` | delete a key (quotas, health, usage cascade) |
-| GET/POST | `/api/resources` | canonical resources |
+| GET | `/api/resources/:id` | single canonical resource (404 if unknown) |
+| GET/POST | `/api/resources` | list / upsert canonical resources |
 | GET/POST | `/api/provider-resources` | canonical ↔ upstream mappings |
 | GET | `/api/routes?resource=&capability=` | expanded executable routes + quotas + health |
 | GET | `/api/routes/counts?capability=` | per-resource route counts in one request (dashboard list views must use this, never one `/api/routes` call per row) |
 | POST | `/api/routing/simulate` | ranked candidates with scores and filter reasons |
 | GET/POST | `/api/quotas` | list (optional `?credential=`) / configure a quota window |
-| GET | `/api/requests?limit=` | request history (credential ids redacted) |
+| GET | `/api/requests?limit=` | per-attempt history with actual routes and credential IDs; secrets excluded |
 | GET | `/api/requests/:id` | single request detail |
 | GET | `/api/usage?credential=&metric=&since=` | live usage sums over usage_events |
 | GET | `/api/overview` | dashboard aggregation (counts, 24h stats) |
 | GET/PATCH | `/api/settings` | runtime default policy (resets on restart) |
-| POST | `/api/credentials/:id/validate` | live upstream probe, marks invalid on auth failure |
-| POST | `/api/maintenance/validate` | batch job: `{provider?, limit?, maxAgeHours?}`, staggered |
+| POST | `/api/credentials/:id/validate` | live probe; definitive 401 marks invalid, inconclusive probes leave state unchanged |
+| POST | `/api/maintenance/validate` | staggered batch: `{provider?, limit?, maxAgeHours?}`; summary includes `inconclusive` |
+| POST | `/api/maintenance/sync` | re-pull live provider catalogs, prune stale mappings, rebuild `auto:free`; returns `{mapped, pruned, skipped, autoFreeMappings}` |
 | DELETE | `/api/quotas/:id` | delete a quota window |
 | PATCH/DELETE | `/api/provider-resources/:id` | enable/disable or delete a mapping |
 | DELETE | `/api/resources/:id`, `/api/accounts/:id`, `/api/providers/:id` | deletes (FK cascades) |
 
-Dashboard UI at `GET /dashboard` (static, no build step).
+Dashboard UI at `GET /dashboard` (React/Vite build in `web/dist`; run
+`pnpm web:build`, or `pnpm dev:web` for the Vite dev server with API proxy).
+The dashboard and `/api/*` are unauthenticated by design. The dashboard exposes
+key/account/quota operations, route inspection and an Add page for key-first
+provisioning plus manual canonical-model/route creation. Adding a new provider
+adapter or tool integration is still a backend change; known tool adapters
+(Exa/Tavily/Firecrawl) can be materialized from a key through `/api/keys`.
+
+Provider and credential PATCH bodies are validated; invalid status/type
+values return 400. Credential labels are trimmed and capped at 128 chars.
+Moving an existing account to another provider returns
+409; create a new account instead. Individual credential probes return
+`definitive: false` when inconclusive, and successful validation preserves
+an explicitly disabled key. Model sync preserves disabled mappings, tools
+and custom canonical mappings; failed discovery can add curated models
+without pruning existing routes.
 
 ## MCP server
 

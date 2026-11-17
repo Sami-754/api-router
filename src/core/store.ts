@@ -43,12 +43,17 @@ export interface Store {
   getCredential(id: string): Credential | undefined;
   listCredentials(accountId?: string): Credential[];
   updateCredentialStatus(id: string, status: Credential["status"]): void;
+  updateCredentialLabel(id: string, label: string | null): void;
   markCredentialValidated(id: string, ok: boolean): void;
   deleteCredential(id: string): void;
 
   // -- resources --
   upsertResource(r: Omit<Resource, "createdAt" | "updatedAt">): Resource;
   getResource(id: string): Resource | undefined;
+  resolveResourceByModel?(
+    logicalModel: string,
+    providerPin?: string | null,
+  ): Resource | undefined;
   listResources(): Resource[];
   deleteResource(id: string): void;
 
@@ -78,6 +83,7 @@ export interface Store {
     },
   ): QuotaWindow;
   listQuotaWindows(credentialId?: string): QuotaWindow[];
+  listQuotaWindowsForCredentials(credentialIds: string[]): QuotaWindow[];
   deleteQuotaWindow(id: string): void;
   recordQuotaObservation(
     q: Omit<QuotaWindow, "id" | "createdAt" | "updatedAt" | "observedAt"> & {
@@ -102,6 +108,7 @@ export interface Store {
     credentialId: string,
     providerResourceId?: string | null,
   ): HealthSnapshot | undefined;
+  listHealthForCredentials(credentialIds: string[]): HealthSnapshot[];
   /**
    * Future cooldown that belongs to the whole API key (rate limit, quota, auth),
    * so one limited key is skipped for every model on that provider.

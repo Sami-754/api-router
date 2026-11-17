@@ -1,4 +1,4 @@
-import { decryptSecret, newId } from "../shared/crypto.js";
+import { decryptSecret, newId, redactSecrets } from "../shared/crypto.js";
 import type { Store } from "../core/store.js";
 import type { ProviderRegistry } from "../provider-sdk/registry.js";
 import type { CredentialValidationResult } from "../provider-sdk/types.js";
@@ -22,6 +22,7 @@ export interface ValidateJobSummary {
   checked: number;
   ok: number;
   invalid: number;
+  inconclusive: number;
   skippedFresh: number;
   errors: Array<{ credential: string; message: string }>;
 }
@@ -44,22 +45,34 @@ export async function validateCredentialById(
   } catch {
     throw new Error("stored secret is undecryptable (wrong MASTER_KEY?)");
   }
-  const result = await adapter.validateCredential(
-    {
-      id: cred.id,
-      accountId: cred.accountId,
-      providerId: cred.providerId,
-      secret,
-    },
-    {
-      requestId: newId("validate"),
-      baseUrl: provider?.baseUrl ?? undefined,
-      timeoutMs,
-      fetchImpl,
-    },
-  );
-  store.markCredentialValidated(id, result.ok);
-  return { ...result, status: store.getCredential(id)?.status };
+  const result = await adapter
+    .validateCredential(
+      {
+        id: cred.id,
+        accountId: cred.accountId,
+        providerId: cred.providerId,
+        secret,
+      },
+      {
+        requestId: newId("validate"),
+        baseUrl: provider?.baseUrl ?? undefined,
+        timeoutMs,
+        fetchImpl,
+      },
+    )
+    .catch((e: unknown) => {
+      throw new Error(
+        redactSecrets(e instanceof Error ? e.message : String(e), [secret]),
+      );
+    });
+  if (result.definitive !== false) store.markCredentialValidated(id, result.ok);
+  return {
+    ...result,
+    message: result.message
+      ? redactSecrets(result.message, [secret])
+      : undefined,
+    status: store.getCredential(id)?.status,
+  };
 }
 
 /** Batch validation: round-robin over stale active credentials. */
@@ -88,6 +101,7 @@ export async function runValidationJob(
     checked: 0,
     ok: 0,
     invalid: 0,
+    inconclusive: 0,
     skippedFresh:
       all.filter((c) => c.status === "active").length - stale.length,
     errors: [],
@@ -102,7 +116,13 @@ export async function runValidationJob(
         timeoutMs,
       );
       summary.checked += 1;
-      if (r.ok) summary.ok += 1;
+      if (r.definitive === false) {
+        summary.inconclusive += 1;
+        summary.errors.push({
+          credential: cred.id,
+          message: r.message ?? "inconclusive probe",
+        });
+      } else if (r.ok) summary.ok += 1;
       else {
         summary.invalid += 1;
         summary.errors.push({
@@ -112,7 +132,7 @@ export async function runValidationJob(
       }
     } catch (e) {
       summary.checked += 1;
-      summary.invalid += 1;
+      summary.inconclusive += 1;
       summary.errors.push({
         credential: cred.id,
         message: e instanceof Error ? e.message : String(e),

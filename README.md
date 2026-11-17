@@ -63,15 +63,20 @@ See:
 
 ## Project status
 
-Router core + dashboard + protocols working (2026-09-25): chat completions
+Router core + dashboard + protocols working (2026-11-17): chat completions
 (auto-route, `provider::model` pin, **streaming**), `/v1/responses`,
 `/v1/messages` (Anthropic), `/v1/tools/search` (Exa/Tavily adapters),
 fallback, health/cooldown, quota windows + live rate limits, `burn` routing,
 batch key validation, plug-and-play tools (`/v1/tools/{search,scrape,extract,crawl,map}`
 across Exa/Tavily/Firecrawl) + MCP server (`pnpm mcp`: `web_search/scrape/extract/crawl/map`, `chat`).
-70 tests green (`pnpm test`).
+127 tests green (`pnpm test`).
 
-Dashboard: `GET /dashboard` (no auth — local-first; bind to loopback).
+Dashboard: `GET /dashboard` (React + Vite build; no auth — local-first,
+bind to loopback). The **Add** page is key-first: pick a provider (including
+Exa/Tavily/Firecrawl), paste the key and label it. Tool providers are
+provisioned with their routes automatically. A second tab creates a canonical
+model + provider route when catalog sync misses one. The old dependency-free
+`public/` dashboard has been replaced by the app in `web/`.
 
 ## Quickstart (pnpm)
 
@@ -80,7 +85,16 @@ cp .env.example .env
 # put a long random value in MASTER_KEY, e.g. openssl rand -base64 32
 pnpm install
 pnpm db:migrate
-pnpm dev
+pnpm dev        # API on :4500
+pnpm dev:web    # dashboard on :5173 (proxies /api, /v1, /healthz)
+```
+
+For a single production-style process:
+
+```sh
+pnpm build      # builds web/dist, then dist/server
+pnpm start
+# open http://127.0.0.1:4500/dashboard
 ```
 
 Seeded on first boot: `llm:model:nemotron-3-super-120b` mapped to Groq and

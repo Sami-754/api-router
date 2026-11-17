@@ -36,13 +36,12 @@ export function classifyHttpStatus(
     }
     return retryableFor("rate_limit", true);
   }
-  if (status === 402 || status === 403) {
+  if (status === 402) return retryableFor("quota_exhausted", true);
+  if (status === 403) {
     if (/quota|credit|balance|payment/.test(body)) {
       return retryableFor("quota_exhausted", true);
     }
-    // 403 without quota/credit keywords is an auth failure; a bare
-    // 402 falls through to unknown (as before).
-    if (status === 403) return retryableFor("auth", false);
+    return retryableFor("auth", false);
   }
   if (status === 408) return retryableFor("timeout", true);
   if (status >= 500) return retryableFor("provider_unavailable", true);

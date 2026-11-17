@@ -6,9 +6,17 @@ import type {
 } from "../shared/types.js";
 
 // Normalized LLM chat request (subset of OpenAI chat completions).
+export interface NormalizedChatMessage {
+  role: string;
+  content: string | null;
+  name?: string;
+  tool_calls?: unknown[];
+  tool_call_id?: string;
+}
+
 export interface NormalizedChatRequest {
   requestId: string;
-  messages: Array<{ role: string; content: string }>;
+  messages: NormalizedChatMessage[];
   temperature?: number;
   topP?: number;
   maxTokens?: number;
@@ -23,7 +31,11 @@ export interface NormalizedChatResponse {
   model: string;
   choices: Array<{
     index: number;
-    message: { role: string; content: string };
+    message: {
+      role: string;
+      content: string | null;
+      tool_calls?: unknown[];
+    };
     finishReason: string | null;
   }>;
   usage?: {
@@ -138,11 +150,15 @@ export interface AdapterContext {
   requestId: string;
   baseUrl?: string;
   timeoutMs: number;
+  /** Absolute router deadline, shared by all subrequests of an adapter. */
+  deadlineAt?: number;
   fetchImpl?: typeof fetch;
 }
 
 export interface CredentialValidationResult {
   ok: boolean;
+  /** False for outages, throttling, or unsupported probes; do not change stored validity. */
+  definitive?: boolean;
   message?: string;
   accountHint?: string;
 }
@@ -218,6 +234,8 @@ export interface ProviderAdapter {
 /** One streamed delta. Adapters yield content; the server frames SSE. */
 export interface StreamChunk {
   delta: string;
+  /** OpenAI-style tool-call deltas, forwarded verbatim for agent clients. */
+  toolCalls?: unknown[];
   finishReason?: string | null;
   usage?: {
     promptTokens: number;

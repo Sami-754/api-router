@@ -77,7 +77,7 @@ async function runContents(
   }));
 }
 
-export const exaAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
+const exaAdapter = (defaultBaseUrl = DEFAULT_BASE) =>
   defineToolAdapter({
     providerId: "exa",
     displayName: "Exa",

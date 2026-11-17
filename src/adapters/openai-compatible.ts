@@ -83,18 +83,24 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         },
         context,
       );
+      await res.body?.cancel();
       if (res.ok) return { ok: true, message: "credential valid" };
-      if (res.status === 401 || res.status === 403) {
-        return { ok: false, message: "credential rejected (401/403)" };
+      if (res.status === 401) {
+        return { ok: false, message: "credential rejected (401)" };
       }
-      // Any other reachable response means auth shape was accepted enough
-      // to validate connectivity; treat non-401 as inconclusive-but-ok.
+      // Reachability alone does not validate a credential. Edge blocks,
+      // throttling and unsupported model-list probes are inconclusive.
       return {
-        ok: res.status !== 401 && res.status !== 403,
+        ok: false,
+        definitive: false,
         message: `upstream HTTP ${res.status}`,
       };
     } catch (e) {
-      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+      return {
+        ok: false,
+        definitive: false,
+        message: e instanceof Error ? e.message : String(e),
+      };
     }
   }
 
@@ -242,12 +248,17 @@ export class OpenAICompatibleAdapter implements ProviderAdapter {
         throw Object.assign(new Error(`upstream timeout`), {
           providerError: timeoutError("timeout"),
         });
-      throw Object.assign(new Error(`upstream network error`), {
-        providerError: networkError(String(e)),
-      });
+      throw Object.assign(
+        new Error(
+          `upstream network error: ${e instanceof Error ? e.message : String(e)}`,
+        ),
+        {
+          providerError: networkError(String(e)),
+        },
+      );
     }
     if (!res.ok || !res.body) {
-      const text = res.body ? "" : await res.text().catch(() => "");
+      const text = await res.text();
       const classified = classifyHttpStatus(
         res.status,
         text,
@@ -291,17 +302,40 @@ function normalizeChatResponse(
   json: Record<string, unknown>,
   fallbackModel: string,
 ) {
+  if (
+    !json ||
+    !Array.isArray(json.choices) ||
+    !json.choices.length ||
+    json.choices.some(
+      (c) =>
+        !c ||
+        typeof c !== "object" ||
+        !c.message ||
+        typeof c.message !== "object",
+    )
+  ) {
+    throw Object.assign(new Error("invalid chat completion from upstream"), {
+      providerError: {
+        errorClass: "provider_unavailable",
+        message: "invalid chat completion",
+        retryable: true,
+      } satisfies ProviderError,
+    });
+  }
   const choicesRaw =
     (json.choices as Array<Record<string, unknown>> | undefined) ?? [];
   const choices = choicesRaw.map((c, i) => {
     const msg = (c.message as Record<string, unknown> | undefined) ?? {};
     const content =
-      typeof msg.content === "string" ? msg.content : (msg.content ?? "");
+      typeof msg.content === "string" ? msg.content : (msg.content ?? null);
     return {
       index: typeof c.index === "number" ? c.index : i,
       message: {
         role: typeof msg.role === "string" ? msg.role : "assistant",
-        content: String(content ?? ""),
+        content: content === null ? null : String(content),
+        ...(Array.isArray(msg.tool_calls)
+          ? { tool_calls: msg.tool_calls }
+          : {}),
       },
       finishReason:
         typeof c.finish_reason === "string" ? c.finish_reason : null,
@@ -341,13 +375,53 @@ async function fetchWithTimeout(
   context: AdapterContext,
 ): Promise<Response> {
   const fetchImpl = context.fetchImpl ?? fetch;
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), context.timeoutMs);
+  // Fetch resolves at headers. The signal must remain active for body reads
+  // and the entire SSE stream, rather than being cleared at that point.
+  return fetchImpl(url, {
+    ...init,
+    signal: AbortSignal.timeout(context.timeoutMs),
+  });
+}
+
+function parseSseLine(
+  line: string,
+): { chunk?: StreamChunk; isDone?: boolean } | null {
+  const t = line.trim();
+  if (!t.startsWith("data:")) return null;
+  const payload = t.slice(5).trim();
+  if (payload === "[DONE]") return { isDone: true };
+  let json: Record<string, unknown>;
   try {
-    return await fetchImpl(url, { ...init, signal: ctrl.signal });
-  } finally {
-    clearTimeout(timer);
+    json = JSON.parse(payload) as Record<string, unknown>;
+  } catch {
+    return null;
   }
+  const choice = (
+    json.choices as Array<Record<string, unknown>> | undefined
+  )?.[0];
+  const delta = choice?.delta as Record<string, unknown> | undefined;
+  const content = typeof delta?.content === "string" ? delta.content : "";
+  const toolCalls = Array.isArray(delta?.tool_calls)
+    ? (delta.tool_calls as unknown[])
+    : undefined;
+  const finish =
+    typeof choice?.finish_reason === "string" ? choice.finish_reason : null;
+  const u = json.usage as Record<string, number> | undefined;
+  const usage =
+    u && typeof u.prompt_tokens === "number"
+      ? {
+          promptTokens: u.prompt_tokens,
+          completionTokens: u.completion_tokens ?? 0,
+          totalTokens:
+            u.total_tokens ??
+            (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0),
+        }
+      : undefined;
+  if (content || toolCalls?.length || finish || usage)
+    return {
+      chunk: { delta: content, toolCalls, finishReason: finish, usage },
+    };
+  return null;
 }
 
 /** Parse an OpenAI-style SSE chat stream into content deltas. */
@@ -357,49 +431,57 @@ async function* parseSseChat(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buf = "";
+  let finished = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        buf += decoder.decode();
+        if (buf.trim()) {
+          const lines = buf.split("\n");
+          for (const line of lines) {
+            const parsed = parseSseLine(line);
+            if (parsed?.isDone) {
+              finished = true;
+              return;
+            }
+            if (parsed?.chunk) {
+              if (parsed.chunk.finishReason) finished = true;
+              yield parsed.chunk;
+            }
+          }
+        }
+        break;
+      }
       buf += decoder.decode(value, { stream: true });
       const lines = buf.split("\n");
       buf = lines.pop() ?? "";
       for (const line of lines) {
-        const t = line.trim();
-        if (!t.startsWith("data:")) continue;
-        const payload = t.slice(5).trim();
-        if (payload === "[DONE]") return;
-        let json: Record<string, unknown>;
-        try {
-          json = JSON.parse(payload) as Record<string, unknown>;
-        } catch {
-          continue;
+        const parsed = parseSseLine(line);
+        if (parsed?.isDone) {
+          finished = true;
+          return;
         }
-        const choice = (
-          json.choices as Array<Record<string, unknown>> | undefined
-        )?.[0];
-        const delta = choice?.delta as Record<string, unknown> | undefined;
-        const content = typeof delta?.content === "string" ? delta.content : "";
-        const finish =
-          typeof choice?.finish_reason === "string"
-            ? choice.finish_reason
-            : null;
-        const u = json.usage as Record<string, number> | undefined;
-        const usage =
-          u && typeof u.prompt_tokens === "number"
-            ? {
-                promptTokens: u.prompt_tokens,
-                completionTokens: u.completion_tokens ?? 0,
-                totalTokens:
-                  u.total_tokens ??
-                  (u.prompt_tokens ?? 0) + (u.completion_tokens ?? 0),
-              }
-            : undefined;
-        if (content || finish || usage)
-          yield { delta: content, finishReason: finish, usage };
+        if (parsed?.chunk) {
+          if (parsed.chunk.finishReason) finished = true;
+          yield parsed.chunk;
+        }
       }
     }
+    if (!finished) {
+      throw Object.assign(
+        new Error("upstream closed stream before completion"),
+        {
+          providerError: {
+            errorClass: "provider_unavailable",
+            message: "truncated upstream stream",
+            retryable: true,
+          } satisfies ProviderError,
+        },
+      );
+    }
   } finally {
+    await reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
@@ -407,6 +489,8 @@ async function* parseSseChat(
 function isAbort(e: unknown): boolean {
   return (
     e instanceof Error &&
-    (e.name === "AbortError" || /aborted/i.test(e.message))
+    (e.name === "AbortError" ||
+      e.name === "TimeoutError" ||
+      /aborted/i.test(e.message))
   );
 }

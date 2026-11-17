@@ -116,10 +116,63 @@ describe("syncProviderModels", () => {
     const ups = store
       .listProviderResources(undefined, "testprov")
       .map((m) => m.upstreamId);
-    expect(ups).toEqual(["curated-one"]);
+    expect(ups.sort()).toEqual(["curated-one", "gone-model", "paid-model"]);
     expect(summary.mapped).toBe(1);
-    expect(summary.pruned).toBe(2);
+    expect(summary.pruned).toBe(0);
     expect(summary.skipped).toEqual([]);
+  });
+
+  it("keeps disabled mappings disabled across sync", async () => {
+    const store = seedStore();
+    const mapping = store
+      .listProviderResources()
+      .find((m) => m.upstreamId === "paid-model")!;
+    store.setProviderResourceEnabled(mapping.id, false);
+    await syncProviderModels({ store, fetchImpl: modelsFetch as typeof fetch });
+    expect(store.getProviderResource(mapping.id)?.enabled).toBe(false);
+  });
+
+  it("does not prune tool or custom canonical mappings while syncing models", async () => {
+    const store = seedStore();
+    store.upsertResource({
+      id: "web.search",
+      kind: "capability",
+      displayName: "Search",
+      capabilities: ["web.search"],
+    });
+    store.upsertResource({
+      id: "llm:model:logical-model",
+      kind: "llm_model",
+      displayName: "Logical",
+      capabilities: ["llm.chat"],
+    });
+    const tool = store.upsertProviderResource({
+      resourceId: "web.search",
+      providerId: "testprov",
+      upstreamId: "search",
+      capabilities: ["web.search"],
+      enabled: true,
+    });
+    const custom = store.upsertProviderResource({
+      resourceId: "llm:model:logical-model",
+      providerId: "testprov",
+      upstreamId: "paid-model",
+      capabilities: ["llm.chat"],
+      enabled: true,
+    });
+    await syncProviderModels({ store, fetchImpl: modelsFetch as typeof fetch });
+    expect(store.getProviderResource(tool.id)).toBeDefined();
+    expect(store.getProviderResource(custom.id)).toBeDefined();
+  });
+
+  it("does not treat a malformed successful discovery body as an empty catalog", async () => {
+    const store = seedStore();
+    await syncProviderModels({
+      store,
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ error: "not a catalog" })),
+    });
+    expect(store.listProviderResources()).toHaveLength(2);
   });
 
   it("leaves everything untouched when discovery fails with no fallback", async () => {
@@ -173,5 +226,28 @@ describe("auto:free alias", () => {
     store.setProviderResourceEnabled(src.id, false);
     expect(refreshAutoFreeAlias(store)).toBe(0);
     expect(store.listProviderResources(AUTO_FREE_RESOURCE_ID)).toHaveLength(0);
+  });
+
+  it("discovers models from providers using models: [{ name }] (Cohere/Ollama format)", async () => {
+    const store = seedStore();
+    const cohereFetch = () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            models: [{ name: "command-r-plus:free" }, { name: "command-r" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    const summary = await syncProviderModels({
+      store,
+      fetchImpl: cohereFetch as unknown as typeof fetch,
+    });
+    expect(summary.mapped).toBeGreaterThanOrEqual(2);
+    const discovered = store
+      .listProviderResources(undefined, "testprov")
+      .map((m) => m.upstreamId);
+    expect(discovered).toContain("command-r-plus:free");
+    expect(discovered).toContain("command-r");
   });
 });

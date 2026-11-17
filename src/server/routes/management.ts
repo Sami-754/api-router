@@ -2,9 +2,12 @@ import type { FastifyInstance } from "fastify";
 import {
   accountSchema,
   credentialCreateSchema,
+  credentialPatchSchema,
+  keyProvisionSchema,
   policySchema,
   providerResourceSchema,
   providerSchema,
+  providerPatchSchema,
   quotaWindowSchema,
   resourceSchema,
 } from "../../shared/schemas.js";
@@ -15,7 +18,14 @@ import {
 } from "../../shared/crypto.js";
 import { validateBaseUrl } from "../../shared/config.js";
 import { runValidationJob, validateCredentialById } from "../validate.js";
-import type { AppDeps } from "../app.js";
+import {
+  AUTO_FREE_RESOURCE_ID,
+  syncProviderModels,
+  type ModelSyncSummary,
+} from "../free-models.js";
+import type { AppDeps } from "../deps.js";
+import { adapterCatalog } from "../tool-catalog.js";
+import { ProvisionError, provisionKey } from "../provision.js";
 
 function bad(
   reply: { code(n: number): { send(b: unknown): unknown } },
@@ -32,6 +42,13 @@ export async function registerManagementRoutes(
   deps: AppDeps,
 ): Promise<void> {
   const { store, router } = deps;
+  type SyncResult = ModelSyncSummary & { autoFreeMappings: number };
+  let syncInFlight: Promise<SyncResult> | null = null;
+
+  // ---- registered adapters (dashboard: provider suggestions / health) ----
+  app.get("/api/adapters", async () => ({
+    data: adapterCatalog(deps.registry),
+  }));
 
   // ---- providers ----
   app.get("/api/providers", async () => ({ data: store.listProviders() }));
@@ -60,12 +77,13 @@ export async function registerManagementRoutes(
     const { id } = req.params as { id: string };
     const existing = store.getProvider(id);
     if (!existing) return bad(reply, `unknown provider: ${id}`, 404);
-    const body = (req.body ?? {}) as Partial<{
-      displayName: string;
-      baseUrl: string | null;
-      enabled: boolean;
-      priority: number;
-    }>;
+    const parsed = providerPatchSchema.safeParse(req.body ?? {});
+    if (!parsed.success)
+      return bad(
+        reply,
+        parsed.error.issues[0]?.message ?? "invalid provider patch",
+      );
+    const body = parsed.data;
     if (typeof body.baseUrl === "string") {
       try {
         validateBaseUrl(body.baseUrl);
@@ -95,6 +113,17 @@ export async function registerManagementRoutes(
     if (!store.getProvider(parsed.data.providerId)) {
       return bad(reply, `unknown provider: ${parsed.data.providerId}`, 404);
     }
+    const existing = store.getAccount(parsed.data.id);
+    if (
+      existing &&
+      existing.providerId !== parsed.data.providerId.toLowerCase()
+    ) {
+      return bad(
+        reply,
+        "an existing account cannot be moved to a different provider; create a new account",
+        409,
+      );
+    }
     const a = store.upsertAccount({
       id: parsed.data.id,
       providerId: parsed.data.providerId.toLowerCase(),
@@ -120,6 +149,22 @@ export async function registerManagementRoutes(
       updatedAt: c.updatedAt,
     }));
     return { data: creds };
+  });
+  app.post("/api/keys", async (req, reply) => {
+    const parsed = keyProvisionSchema.safeParse(req.body);
+    if (!parsed.success)
+      return bad(reply, parsed.error.issues[0]?.message ?? "invalid key");
+    try {
+      return reply.code(201).send({
+        data: provisionKey(deps.store, deps.registry, parsed.data),
+      });
+    } catch (e) {
+      return bad(
+        reply,
+        e instanceof Error ? e.message : String(e),
+        e instanceof ProvisionError ? e.statusCode : 400,
+      );
+    }
   });
   app.post("/api/credentials", async (req, reply) => {
     const parsed = credentialCreateSchema.safeParse(req.body);
@@ -152,11 +197,15 @@ export async function registerManagementRoutes(
     const { id } = req.params as { id: string };
     const existing = store.getCredential(id);
     if (!existing) return bad(reply, `unknown credential: ${id}`, 404);
-    const body = (req.body ?? {}) as Partial<{
-      status: "active" | "disabled" | "invalid";
-      label: string;
-    }>;
+    const parsed = credentialPatchSchema.safeParse(req.body ?? {});
+    if (!parsed.success)
+      return bad(
+        reply,
+        parsed.error.issues[0]?.message ?? "invalid credential patch",
+      );
+    const body = parsed.data;
     if (body.status) store.updateCredentialStatus(id, body.status);
+    if (body.label !== undefined) store.updateCredentialLabel(id, body.label);
     return {
       data: store.getCredential(id)
         ? { ...store.getCredential(id), secretEncrypted: undefined }
@@ -166,6 +215,12 @@ export async function registerManagementRoutes(
 
   // ---- resources ----
   app.get("/api/resources", async () => ({ data: store.listResources() }));
+  app.get("/api/resources/:id", async (req, reply) => {
+    const { id } = req.params as { id: string };
+    const resource = store.getResource(id);
+    if (!resource) return bad(reply, `unknown resource: ${id}`, 404);
+    return { data: resource };
+  });
   app.post("/api/resources", async (req, reply) => {
     const parsed = resourceSchema.safeParse(req.body);
     if (!parsed.success)
@@ -259,11 +314,30 @@ export async function registerManagementRoutes(
       q.resource,
       (q.capability as never) ?? undefined,
     );
+    const credentialIds = [...new Set(routes.map((r) => r.credentialId))];
+    const quotas = store.listQuotaWindowsForCredentials(credentialIds);
+    const quotasByCredential = new Map<string, typeof quotas>();
+    for (const quota of quotas) {
+      const list = quotasByCredential.get(quota.credentialId) ?? [];
+      list.push(quota);
+      quotasByCredential.set(quota.credentialId, list);
+    }
+    const health = store.listHealthForCredentials(credentialIds);
+    const healthByRoute = new Map<string, (typeof health)[number]>();
+    for (const snapshot of health) {
+      healthByRoute.set(
+        `${snapshot.credentialId}\u0000${snapshot.providerResourceId ?? ""}`,
+        snapshot,
+      );
+    }
     return {
       data: routes.map((r) => ({
         ...r,
-        quotas: store.listQuotaWindows(r.credentialId),
-        health: store.getHealth(r.credentialId, r.providerResourceId),
+        quotas: quotasByCredential.get(r.credentialId) ?? [],
+        health:
+          healthByRoute.get(
+            `${r.credentialId}\u0000${r.providerResourceId ?? ""}`,
+          ) ?? null,
       })),
     };
   });
@@ -457,6 +531,25 @@ export async function registerManagementRoutes(
           : 500;
       return bad(reply, msg, code);
     }
+  });
+
+  // ---- model catalog sync (single-flight; boot runs the same routine) ----
+  app.post("/api/maintenance/sync", async () => {
+    if (!syncInFlight) {
+      syncInFlight = syncProviderModels({
+        store,
+        fetchImpl: deps.fetchImpl,
+      })
+        .then((summary) => ({
+          ...summary,
+          autoFreeMappings: store.listProviderResources(AUTO_FREE_RESOURCE_ID)
+            .length,
+        }))
+        .finally(() => {
+          syncInFlight = null;
+        });
+    }
+    return { data: await syncInFlight };
   });
 
   // ---- batch validation job (staggered, skips fresh credentials) ----
